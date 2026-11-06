@@ -2,6 +2,15 @@ name: Build ready-to-open Mac app
 
 on:
   workflow_dispatch:
+    inputs:
+      architecture:
+        description: Mac architecture to build
+        type: choice
+        options:
+          - Both
+          - Apple-Silicon
+          - Intel
+        default: Both
 
 permissions:
   contents: read
@@ -9,16 +18,12 @@ permissions:
 jobs:
   mac-app:
     name: Mac ${{ matrix.label }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ matrix.label == 'Apple-Silicon' && 'macos-26' || 'macos-15-intel' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - label: Apple-Silicon
-            runner: macos-15
-          - label: Intel
-            runner: macos-15-intel
+        label: ${{ fromJSON(inputs.architecture == 'Apple-Silicon' && '["Apple-Silicon"]' || inputs.architecture == 'Intel' && '["Intel"]' || '["Apple-Silicon","Intel"]') }}
     steps:
       - name: Restore bundled project sources
         run: |
