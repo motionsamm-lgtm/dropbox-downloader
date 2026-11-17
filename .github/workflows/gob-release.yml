@@ -5,7 +5,7 @@ on:
       version:
         description: New GOB version (increase for every update, for example 1.0.1)
         required: true
-        default: '1.0.0'
+        default: '1.0.2'
         type: string
 permissions:
   contents: read
@@ -28,10 +28,10 @@ jobs:
           assert re.fullmatch(r'\d+\.\d+\.\d+',version), 'Use a numeric three-part version.'
           for root in ['mac/Sources','windows']:
               for p in pathlib.Path(root).rglob('*'):
-                  if p.suffix in ['.mjs','.ps1','.cs']:
+                  if p.suffix in ['.mjs','.ps1','.cs','.iss']:
                       raw=p.read_bytes()
                       bom=raw.startswith(b'\xef\xbb\xbf')
-                      text=raw.decode('utf-8-sig').replace('1.0.0',version)
+                      text=re.sub(r'(?<![0-9])1\.0\.[01](?![0-9])',version,raw.decode('utf-8-sig'))
                       p.write_bytes((b'\xef\xbb\xbf' if bom else b'')+text.encode())
           p=pathlib.Path('mac/Info.plist')
           d=plistlib.loads(p.read_bytes()); d['CFBundleShortVersionString']=version; d['CFBundleVersion']=version
@@ -59,10 +59,10 @@ jobs:
           assert re.fullmatch(r'\d+\.\d+\.\d+',version), 'Use a numeric three-part version.'
           for root in ['mac/Sources','windows']:
               for p in pathlib.Path(root).rglob('*'):
-                  if p.suffix in ['.mjs','.ps1','.cs']:
+                  if p.suffix in ['.mjs','.ps1','.cs','.iss']:
                       raw=p.read_bytes()
                       bom=raw.startswith(b'\xef\xbb\xbf')
-                      text=raw.decode('utf-8-sig').replace('1.0.0',version)
+                      text=re.sub(r'(?<![0-9])1\.0\.[01](?![0-9])',version,raw.decode('utf-8-sig'))
                       p.write_bytes((b'\xef\xbb\xbf' if bom else b'')+text.encode())
           p=pathlib.Path('mac/Info.plist')
           d=plistlib.loads(p.read_bytes()); d['CFBundleShortVersionString']=version; d['CFBundleVersion']=version
