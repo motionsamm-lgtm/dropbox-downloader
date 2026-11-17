@@ -1,0 +1,36 @@
+name: Verify published GOB update
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published GOB version to verify
+        required: true
+        default: '1.0.2'
+        type: string
+permissions:
+  contents: read
+env:
+  GOB_VERSION: ${{ inputs.version }}
+jobs:
+  public-feed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check public feed version and all asset hashes
+        run: |
+          for attempt in {1..12}; do
+            curl --fail --silent --show-error --location --retry 3 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json' -o live-manifest.json
+            if python -c 'import os,json; v=json.load(open("live-manifest.json"))["version"]; print("Public feed:",v); assert v==os.environ["GOB_VERSION"]'; then break; fi
+            sleep 5
+          done
+          python -c 'import os,json; assert json.load(open("live-manifest.json"))["version"]==os.environ["GOB_VERSION"]'
+          python .github/scripts/verify-live-manifest.py live-manifest.json
+  windows-client:
+    needs: public-feed
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify actual native 1.0.1 client through production update feed
+        shell: powershell
+        run: ./.github/scripts/test-live-windows-update.ps1 -Version $env:GOB_VERSION
