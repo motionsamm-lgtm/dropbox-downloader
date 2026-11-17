@@ -35,7 +35,14 @@ jobs:
           $app = Join-Path $installed 'GOB.exe'
           if (-not (Test-Path $app)) { throw 'Installed GOB executable missing.' }
           # Close the normal app opened by Setup before testing repeat launches.
-          Get-Process GOB -ErrorAction SilentlyContinue | Where-Object Path -eq $app | ForEach-Object { [void]$_.CloseMainWindow(); if (-not $_.WaitForExit(15000)) { throw 'Installed GUI did not close cleanly.' } }
+          $until = (Get-Date).AddSeconds(40)
+          do {
+            $running = @(Get-Process GOB -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $app })
+            foreach ($p in $running) { $p.Refresh(); if ($p.MainWindowHandle -ne 0) { [void]$p.CloseMainWindow() } }
+            if (-not $running.Count) { break }
+            Start-Sleep -Milliseconds 250
+          } while ((Get-Date) -lt $until)
+          if ($running.Count) { throw 'Installed GUI or update-check helper did not exit cleanly.' }
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'GOB.lnk'
           $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
           if ($link.TargetPath -ne $app -or $link.IconLocation -notlike "$app,*") { throw 'Start menu shortcut does not target the native app and icon.' }
