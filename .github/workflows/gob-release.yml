@@ -3,107 +3,145 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: New GOB version (increase for every update, for example 1.0.1)
+        description: New version, increase for every release
         required: true
         default: '1.0.2'
         type: string
+concurrency:
+  group: gob-production-release
+  cancel-in-progress: false
 permissions:
   contents: read
 env:
   GOB_VERSION: ${{ inputs.version }}
 jobs:
-  mac:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-26, macos-15-intel]
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
-      - name: Set release version
-        shell: python
+      - name: Validate version and avoid replacing an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          import os,re,pathlib,plistlib
-          version=os.environ['GOB_VERSION']
-          assert re.fullmatch(r'\d+\.\d+\.\d+',version), 'Use a numeric three-part version.'
-          for root in ['mac/Sources','windows']:
-              for p in pathlib.Path(root).rglob('*'):
-                  if p.suffix in ['.mjs','.ps1','.cs','.iss']:
-                      raw=p.read_bytes()
-                      bom=raw.startswith(b'\xef\xbb\xbf')
-                      text=re.sub(r'(?<![0-9])1\.0\.[01](?![0-9])',version,raw.decode('utf-8-sig'))
-                      p.write_bytes((b'\xef\xbb\xbf' if bom else b'')+text.encode())
-          p=pathlib.Path('mac/Info.plist')
-          d=plistlib.loads(p.read_bytes()); d['CFBundleShortVersionString']=version; d['CFBundleVersion']=version
-          p.write_bytes(plistlib.dumps(d))
-          p=pathlib.Path('mac/Tests/updates.test.mjs')
-          text=p.read_text().replace("version:'1.1.0'", "version:'"+str(int(version.split('.')[0])+1)+".0.0'")
-          p.write_text(text)
-      - name: Build and verify GOB Mac
-        working-directory: mac
-        run: bash Scripts/package-mac.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: GOB-${{ matrix.runner }}
-          path: mac/dist/*.zip
-          if-no-files-found: error
+          python -c 'import os,re; assert re.fullmatch(r"\d+\.\d+\.\d+",os.environ["GOB_VERSION"])'
+          if gh release view "gob-v$GOB_VERSION" >/dev/null 2>&1; then echo 'This release version already exists.'; exit 1; fi
+      - name: Stamp release version in actual sources
+        run: python .github/scripts/stamp-version.py "$GOB_VERSION"
+      - name: Commit versioned release source
+        id: commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add windows mac
+          if ! git diff --cached --quiet; then git commit -m "Set GOB version $GOB_VERSION"; git push; fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   windows:
+    needs: prepare
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
-      - name: Set release version
-        shell: python
-        run: |
-          import os,re,pathlib,plistlib
-          version=os.environ['GOB_VERSION']
-          assert re.fullmatch(r'\d+\.\d+\.\d+',version), 'Use a numeric three-part version.'
-          for root in ['mac/Sources','windows']:
-              for p in pathlib.Path(root).rglob('*'):
-                  if p.suffix in ['.mjs','.ps1','.cs','.iss']:
-                      raw=p.read_bytes()
-                      bom=raw.startswith(b'\xef\xbb\xbf')
-                      text=re.sub(r'(?<![0-9])1\.0\.[01](?![0-9])',version,raw.decode('utf-8-sig'))
-                      p.write_bytes((b'\xef\xbb\xbf' if bom else b'')+text.encode())
-          p=pathlib.Path('mac/Info.plist')
-          d=plistlib.loads(p.read_bytes()); d['CFBundleShortVersionString']=version; d['CFBundleVersion']=version
-          p.write_bytes(plistlib.dumps(d))
-          p=pathlib.Path('mac/Tests/updates.test.mjs')
-          text=p.read_text().replace("version:'1.1.0'", "version:'"+str(int(version.split('.')[0])+1)+".0.0'")
-          p.write_text(text)
-      - name: Build and verify GOB EXE
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Compile native app and standard installer
         shell: powershell
-        working-directory: windows
-        run: .\Build-Windows.ps1
+        run: ./windows/Build-Windows.ps1
+      - name: Verify old-to-new Windows upgrade and retained history
+        shell: powershell
+        run: ./.github/scripts/test-windows-upgrade.ps1 -NewSetup "$pwd\windows\dist\GOB-Setup.exe" -Version $env:GOB_VERSION
+      - name: Defender custom scan and status
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Get-MpComputerStatus | Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureVersion | Format-List
+          Start-MpScan -ScanType CustomScan -ScanPath "$pwd\windows\dist"
+          $detections=@(Get-MpThreatDetection | Where-Object { $_.Resources -match 'GOB' })
+          if($detections.Count) { $detections | Format-List *; throw 'Defender reported a GOB detection.' }
       - uses: actions/upload-artifact@v4
         with:
           name: GOB-Windows
-          path: windows/dist/GOB.exe
+          path: |
+            windows/dist/GOB.exe
+            windows/dist/GOB-Setup.exe
+            windows/dist/GOB-Windows-Portable.zip
+          if-no-files-found: error
+  mac:
+    needs: prepare
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Build and verify architecture, signature and transfer tests
+        working-directory: mac
+        env:
+          GOB_NATIVE_ARCH: ${{ matrix.arch }}
+        run: bash Scripts/package-mac.sh
+      - name: Verify actual old Mac replacement helper
+        if: matrix.arch == 'x86_64'
+        run: bash .github/scripts/test-mac-upgrade.sh "$PWD/mac/dist/GOB-Mac-Intel.zip" "$GOB_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GOB-Mac-${{ matrix.arch }}
+          path: mac/dist/*.zip
           if-no-files-found: error
   release:
-    needs: [mac, windows]
+    needs: [prepare, windows, mac]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: actions/download-artifact@v4
         with:
           path: release-files
           merge-multiple: true
-      - name: Generate checked update manifest
+      - name: Create manifest from actual release asset bytes
         shell: python
         run: |
-          import hashlib,json,pathlib,os
-          root=pathlib.Path('release-files')
+          import hashlib,json,os,pathlib
+          version=os.environ['GOB_VERSION'];root=pathlib.Path('release-files')
           names={'windows':'GOB.exe','mac-arm64':'GOB-Mac-Apple-Silicon.zip','mac-x64':'GOB-Mac-Intel.zip'}
           assets={}
           for platform,name in names.items():
               file=root/name
-              assets[platform]={'url':'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/gob-v'+os.environ['GOB_VERSION']+'/'+name,'size':file.stat().st_size,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()}
-          (root/'gob-update.json').write_text(json.dumps({'version':os.environ['GOB_VERSION'],'assets':assets},indent=2))
-      - name: Publish GOB release
+              assert file.stat().st_size>0
+              assets[platform]={'url':f'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/gob-v{version}/{name}','size':file.stat().st_size,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()}
+          (root/'gob-update.json').write_text(json.dumps({'version':version,'assets':assets},indent=2))
+      - name: Publish tested stable release and update feed
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "gob-v$GOB_VERSION" release-files/* --target "$GITHUB_SHA" --title "GOB $GOB_VERSION — Grab Our Bytes" --notes "GOB for Windows and macOS. Includes the GOB icon, Start menu branding, update checks and checksum-verified update downloads. Mac builds are ad hoc signed and have not been notarized."
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          Blue doodle goblin on a matte black tile, with transparent outer corners, on Windows and Mac. Existing download interface, transfer engine, saved progress and history are preserved. Windows includes the native GOB process identity and standard installer from the working Windows test build.
+
+          In GOB, choose Check for updates, then Update GOB after pausing or finishing downloads. The app verifies the release file before installation. Windows installer-upgrade and Mac replacement-helper checks gate publication, alongside build and regression tests. Mac Apple Silicon is cross-compiled and architecture/signature checked on an Intel build host; native Apple Silicon device testing is still needed. Mac builds are ad hoc signed and not notarized. Windows Defender custom scans are checked; the build runner's real-time protection is off, so this is not a Microsoft clearance or a guarantee against future detections.
+          EOF
+          gh release create "gob-v$GOB_VERSION" release-files/* --target '${{ needs.prepare.outputs.sha }}' --latest --title "GOB $GOB_VERSION - Grab Our Bytes" --notes-file "$RUNNER_TEMP/notes.md"
+      - name: Verify public anonymous update feed and every update asset
+        run: |
+          curl --fail --location --retry 5 --retry-delay 5 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json' -o live-manifest.json
+          cmp live-manifest.json release-files/gob-update.json
+          python .github/scripts/verify-live-manifest.py live-manifest.json
+  live-windows-update:
+    needs: [prepare, release]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Verify actual 1.0.1 native client through production update feed
+        shell: powershell
+        run: ./.github/scripts/test-live-windows-update.ps1 -Version $env:GOB_VERSION
