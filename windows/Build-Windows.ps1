@@ -44,6 +44,7 @@ if ($quoted -notmatch '^".*"$') { throw 'Windows argument quoting failed.' }
 if (-not [IO.File]::Exists((Join-Path $GOBRoot 'aria2c.exe'))) { throw 'Download engine missing.' }
 & (Join-Path $GOBRoot 'aria2c.exe') --version | Out-Null
 if ($LASTEXITCODE) { throw 'Download engine did not start.' }
+Get-Process -Id 2147483646 -ErrorAction SilentlyContinue | Out-Null
 '@
 }
 $resources = @()

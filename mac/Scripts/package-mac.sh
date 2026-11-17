@@ -6,7 +6,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
   printf '%s\n' 'This release build requires a macOS runner.' >&2
   exit 1
 fi
-case "$(uname -m)" in
+case "${GOB_NATIVE_ARCH:-$(uname -m)}" in
   arm64) arch=arm64; label=Apple-Silicon ;;
   x86_64) arch=x64; label=Intel ;;
   *) printf '%s\n' 'Unsupported build architecture.' >&2; exit 1 ;;
@@ -21,6 +21,12 @@ aria_archive="aria2-${aria_version}.tar.xz"
 workspace="$(mktemp -d)"
 trap 'rm -rf "$workspace"' EXIT
 export MACOSX_DEPLOYMENT_TARGET=14.0
+cross_options=()
+if [[ "$arch" = arm64 && "$(uname -m)" = x86_64 ]]; then
+    export CC="clang -arch arm64"
+    export CXX="clang++ -arch arm64"
+    cross_options=(--host=aarch64-apple-darwin --build=x86_64-apple-darwin)
+fi
 
 download() { /usr/bin/curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' "$@"; }
 download "$node_base/$node_name.tar.gz" -o "$workspace/$node_name.tar.gz"
@@ -39,7 +45,7 @@ download "https://github.com/aria2/aria2/releases/download/release-$aria_version
   cd "aria2-$aria_version"
   mkdir "$workspace/no-pkg-config"
   PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$workspace/no-pkg-config" \
-    ./configure --with-appletls --disable-bittorrent --disable-metalink --disable-nls \
+    ./configure "${cross_options[@]}" --with-appletls --disable-bittorrent --disable-metalink --disable-nls \
       --without-openssl --without-gnutls --without-libnettle --without-libgcrypt \
       --without-libssh2 --without-libcares --without-sqlite3 --without-libxml2 --without-libexpat
   /usr/bin/make -j"$(/usr/sbin/sysctl -n hw.ncpu)"
@@ -63,6 +69,19 @@ done
 /usr/bin/codesign --force --sign - "$app"
 /usr/bin/codesign --verify --strict --deep "$app"
 
+if [[ "$arch" = arm64 && "$(uname -m)" = x86_64 ]]; then
+  for binary in "$bin/node" "$bin/aria2c" "$bin/DropboxDownloader"; do
+    /usr/bin/lipo "$binary" -verify_arch arm64
+  done
+  "$(command -v node)" --test Tests/*.test.mjs
+  /usr/bin/xcrun swiftc -swift-version 5 Sources/main.swift -o "$workspace/HostHelper"
+  mkdir -p "$workspace/smoke"
+  printf 'original' > "$workspace/smoke/existing"
+  printf 'verified' > "$workspace/smoke/partial"
+  if "$workspace/HostHelper" --publish "$workspace/smoke/partial" "$workspace/smoke/existing"; then exit 1; fi
+  "$workspace/HostHelper" --publish "$workspace/smoke/partial" "$workspace/smoke/saved"
+  test "$(cat "$workspace/smoke/saved")" = verified
+else
 "$bin/node" --version
 "$bin/node" --test Tests/*.test.mjs
 "$bin/aria2c" --version
@@ -81,6 +100,8 @@ test "$(cat "$workspace/smoke/saved")" = verified
 cmp "$workspace/smoke/checksums.txt" "$workspace/node-checksums.txt"
 printf '' | "$bin/node" "$resources/backend.mjs" "$workspace/smoke/history" "$bin/DropboxDownloader" "$workspace/smoke" > "$workspace/smoke/worker.jsonl"
 grep -F '"available":true' "$workspace/smoke/worker.jsonl"
+
+fi
 
 package="$workspace/GOB for Mac"
 mkdir -p "$package/ThirdParty" dist

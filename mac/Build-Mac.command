@@ -17,7 +17,7 @@ app="$staging/GOB.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Info.plist "$app/Contents/Info.plist"
 cp Sources/*.mjs Sources/interface.html Sources/install-update.sh "$app/Contents/Resources/"
-/usr/bin/xcrun swiftc -target "$(uname -m)-apple-macosx14.0" -swift-version 5 -O Sources/main.swift \
+/usr/bin/xcrun swiftc -target "${GOB_NATIVE_ARCH:-$(uname -m)}-apple-macosx14.0" -swift-version 5 -O Sources/main.swift \
     -o "$app/Contents/MacOS/DropboxDownloader"
 mkdir -p "$staging/GOB.iconset"
 for size in 16 32 128 256 512; do

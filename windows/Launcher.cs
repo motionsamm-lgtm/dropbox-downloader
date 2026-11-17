@@ -10,8 +10,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("GOB")]
 [assembly: AssemblyProduct("GOB — Grab Our Bytes")]
 [assembly: AssemblyDescription("GOB download manager")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 class Launcher {
  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
  static extern int SetCurrentProcessExplicitAppUserModelID(string id);
@@ -54,7 +54,7 @@ class Launcher {
      if(entry == "notify") ps.AddParameter("Data", value);
      if(entry == "update") { ps.AddParameter("Mode", value); ps.AddParameter("GuiPid", guiPid); }
      ps.Invoke();
-     if(ps.HadErrors) {
+     if(ps.InvocationStateInfo.State == PSInvocationState.Failed) {
       var details = String.Join(Environment.NewLine, System.Linq.Enumerable.Select(ps.Streams.Error, e => e.ToString()));
       throw new Exception(details);
      }

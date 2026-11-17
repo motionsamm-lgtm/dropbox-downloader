@@ -12,7 +12,7 @@ test('update version comparisons handle numeric versions and reject downgrades',
  assert(!newer('nonsense','1.0.0'));
 });
 test('manifest restricts update hosts, checksum and platform',()=>{
- const valid={version:'1.1.0',assets:{'mac-arm64':{url:'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/v1.1.0/GOB.zip',size:10,sha256:'a'.repeat(64)}}};
+ const valid={version:'2.0.0',assets:{'mac-arm64':{url:'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/v1.1.0/GOB.zip',size:10,sha256:'a'.repeat(64)}}};
  assert(selectUpdate(valid,'mac-arm64'));
  assert.throws(()=>selectUpdate(valid,'mac-x64'));
  valid.assets['mac-arm64'].url='https://untrusted.test/GOB.zip';
