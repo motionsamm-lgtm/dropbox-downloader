@@ -12,10 +12,10 @@ function Save-State($value) {
 try {
     $manifest=Invoke-RestMethod 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json' -TimeoutSec 20
     if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid update version.' }
-    if ([version]$manifest.version -le [version]'1.0.0') { Save-State @{status='Current';message='GOB is up to date.'}; exit 0 }
+    if ([version]$manifest.version -le [version]'1.0.1') { Save-State @{status='Current';message='GOB is up to date.'}; exit 0 }
     $asset=$manifest.assets.windows
     if ($asset.sha256 -notmatch '^[a-f0-9]{64}$' -or $asset.size -le 0 -or $asset.size -gt 314572800 -or
-        $asset.url -notmatch '^https://github\.com/motionsamm-lgtm/dropbox-downloader/releases/download/[^/]+/GOB\.exe$') { throw 'Invalid update manifest.' }
+        $asset.url -notmatch '^https://github\.com/motionsamm-lgtm/dropbox-downloader/releases/download/[^/]+/GOB(?:-Setup)?\.exe$') { throw 'Invalid update manifest.' }
     if ($Mode -eq 'Check') { Save-State @{status='Available';version=$manifest.version;message="GOB $($manifest.version) is available."}; exit 0 }
     Save-State @{status='Downloading';message='Downloading and checking the update...'}
     $staged=Join-Path $root ('GOB-update-'+$manifest.version+'.exe')
@@ -27,5 +27,5 @@ try {
     Save-State @{status='Ready';message='Update downloaded. Closing GOB to finish installation.'}
     if ($GuiPid -gt 0) { Wait-Process -Id $GuiPid -ErrorAction SilentlyContinue }
     Save-State @{status='Installed';message='Update launched.'}
-    Start-Process -FilePath $staged
+    Start-Process -FilePath $staged -ArgumentList ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /GOBWAITPID={0}' -f $PID)
 } catch { Save-State @{status='Error';message='Update could not finish. Check your connection and GitHub release access.'}; exit 1 }

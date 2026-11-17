@@ -43,9 +43,7 @@ $paste.Add_Click({
 $null = Add-Control Label 'Output filename (optional)' 26 145 608 22
 $nameBox = Add-Control TextBox '' 26 169 608 28
 $null = Add-Control Label 'Save folder' 26 209 350 21
-$defaultDownloadFolder = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
-if (-not [IO.Directory]::Exists($defaultDownloadFolder)) { $defaultDownloadFolder = [Environment]::GetFolderPath('UserProfile') }
-$directory = Add-Control TextBox $defaultDownloadFolder 26 232 515 28
+$directory = Add-Control TextBox (Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads') 26 232 515 28
 $browse = Add-Control Button 'Browse' 550 228 84 33
 $browse.Add_Click({
     $picker = New-Object Windows.Forms.FolderBrowserDialog
@@ -148,7 +146,7 @@ function Update-SelectedDownload {
 
     $state = $selected.State
     $stage = $selected.Status
-    $resume.Enabled = (-not $script:activeJob -and $stage -in @('Failed','Interrupted','File found'))
+    $resume.Enabled = (-not $script:gobUpdating -and -not $script:activeJob -and $stage -in @('Failed','Interrupted','File found'))
     $openLog.Enabled = $state.SummaryPath -and [IO.File]::Exists($state.SummaryPath)
     $markDone.Enabled = -not $script:activeJob -and $stage -eq 'File found'
     $metrics = $selected.Metrics
@@ -262,11 +260,12 @@ function Update-DownloadHistory {
         $record.Row.SubItems[4].Text = $etaText
         if ($record.Status -in @('Running', 'Starting','Verifying')) { $script:activeJob = $true }
     }
-    $start.Enabled = -not $script:activeJob
+    $start.Enabled = -not $script:activeJob -and -not $script:gobUpdating
     Update-SelectedDownload
 }
 
 function Start-HistoryAttempt([string]$Directory) {
+    if ($script:gobUpdating) { throw 'Wait until the GOB update has finished.' }
     if ($script:activeJob) { throw 'A download is already running.' }
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddHHmmssfffffff')
     $id = [Guid]::NewGuid().ToString('N')
@@ -280,11 +279,9 @@ function Start-HistoryAttempt([string]$Directory) {
         if (-not [IO.File]::Exists((Join-Path $PSScriptRoot 'aria2c.exe'))) {
             throw 'Put aria2c.exe in the downloader folder. See README.txt.'
         }
-        $worker = Join-Path $PSScriptRoot 'Dropbox-Downloader.ps1'
-        $powershell = Join-Path $PSHOME 'powershell.exe'
-        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -HistoryAttempt "{1}"' -f $worker, $attempt
+        $arguments = '--worker "{0}"' -f $attempt
         $launch = [Diagnostics.ProcessStartInfo]::new()
-        $launch.FileName = $powershell
+        $launch.FileName = $GOBExecutable
         $launch.Arguments = $arguments
         $launch.UseShellExecute = $false
         $launch.CreateNoWindow = $true
@@ -449,9 +446,9 @@ $script:updateCheck = $null
 $script:lastUpdateCheck = [DateTime]::MinValue
 $script:lastUpdateMessage = ''
 function Start-GobUpdate([string]$Mode) {
-    $args = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode {1} -GuiPid {2}' -f (Join-Path $PSScriptRoot 'GOB-Update.ps1'), $Mode, $PID
+    $args = '--update {0} {1}' -f $Mode, $PID
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = Join-Path $PSHOME 'powershell.exe'
+    $startInfo.FileName = $GOBExecutable
     $startInfo.Arguments = $args
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
@@ -462,6 +459,7 @@ $updateButton.Add_Click({
     if ($script:updateCheck -and -not $script:updateCheck.HasExited) { return }
     if ($script:updateAvailable) {
         if ($script:activeJob) { Show-UiError 'Pause or finish the active download before updating GOB.'; return }
+        $script:gobUpdating = $true
         Start-GobUpdate 'Install'
         $updateButton.Enabled = $false
         $updateButton.Text = 'Downloading update...'
@@ -486,22 +484,14 @@ $updateTimer.Add_Tick({
                 }
             } elseif ($updateState.status -eq 'Ready') { $form.Close() }
             elseif ($updateState.status -in @('Current','Error','Installed')) {
+                $script:gobUpdating = $false
                 $updateButton.Enabled = $true
                 $updateButton.Text = if ($script:updateAvailable) { 'Retry update' } else { 'Check for updates' }
             }
         }
     } catch { Write-Verbose 'Update status is temporarily unavailable.' }
 })
-try {
-    $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'GOB.lnk'
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = Join-Path $updateRoot 'GOB.exe'
-    $shortcut.IconLocation = $shortcut.TargetPath+',0'
-    $shortcut.Description = 'GOB — Grab Our Bytes'
-    $shortcut.Save()
-} catch { Write-Verbose 'The Start menu shortcut could not be created.' }
-$updateTimer.Start()
+if (-not $GobSmokeTest) { $updateTimer.Start() }
 
 $guiLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderHistoryWindow')
 $guiLocked = $false
@@ -512,7 +502,14 @@ try {
     Update-DownloadHistory
     if ($history.Items.Count) { $history.Items[0].Selected = $true }
     $timer.Start()
+    if ($GobSmokeTest) {
+        $smokeTimer = New-Object Windows.Forms.Timer
+        $smokeTimer.Interval = 700
+        $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close() })
+        $form.Add_Shown({ $smokeTimer.Start() })
+    }
     [void]$form.ShowDialog()
+    if ($GobSmokeTest) { $smokeTimer.Dispose() }
 } finally {
     $updateTimer.Dispose()
     $timer.Dispose()
