@@ -5,7 +5,7 @@ on:
       version:
         description: New version, increase for every release
         required: true
-        default: '1.0.2'
+        default: '1.0.3'
         type: string
 concurrency:
   group: gob-production-release
@@ -133,6 +133,13 @@ jobs:
           In GOB, choose Check for updates, then Update GOB after pausing or finishing downloads. The app verifies the release file before installation. Windows installer-upgrade and Mac replacement-helper checks gate publication, alongside build and regression tests. Mac packages have architecture, signature and regression checks. Apple Silicon is cross-compiled on an Intel build machine; native Apple Silicon device testing remains a limitation. Mac builds are ad hoc signed and not notarized. Windows Defender custom scans are checked; the build runner's real-time protection is off, so this is not a Microsoft clearance or a guarantee against future detections.
           EOF
           gh release create "gob-v$GOB_VERSION" release-files/* --target '${{ needs.prepare.outputs.sha }}' --latest --title "GOB $GOB_VERSION - Grab Our Bytes" --notes-file "$RUNNER_TEMP/notes.md"
+  verify-public:
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - name: Verify public anonymous update feed and every update asset
         run: |
           for attempt in {1..12}; do
@@ -143,7 +150,7 @@ jobs:
           cmp live-manifest.json release-files/gob-update.json
           python .github/scripts/verify-live-manifest.py live-manifest.json
   live-windows-update:
-    needs: [prepare, release]
+    needs: [prepare, verify-public]
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
