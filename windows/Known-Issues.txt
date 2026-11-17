@@ -1,0 +1,77 @@
+DOWNLOAD FAILURE MODES AND HOW V1.6 HANDLES THEM
+
+Scope: Windows Dropbox HTTP downloads. IDM and FDM's torrent, FTP,
+browser-extension and video-capture issues are outside this downloader.
+
+1. Stalled near 99%, timeout, disconnect, zero speed, server overload
+   The worker times out stalled requests, keeps the aria2 checkpoint,
+   retries transient failures with delays, and steps down parallel
+   connections. It respects Retry-After during probes. A server that
+   keeps failing can still prevent the remaining bytes from arriving.
+
+2. Download complete but stuck on final save or file in use
+   The worker writes directly into the destination directory and renames
+   the verified partial on the same volume. It retries Windows sharing
+   and access errors. Start / Resume can finish saving a recorded
+   completed file locally, even if Dropbox is offline. If the security
+   software or filesystem blocks access permanently, use its normal
+   permission controls or choose an accessible destination.
+
+3. Resume rejected, HTTP 200 instead of 206, invalid range, HTTP 416
+   The worker tests byte ranges and validates returned range boundaries.
+   It never appends a full HTTP 200 response to a segmented partial.
+   One pass is an explicit fresh transfer when ranges are unavailable.
+   An older checkpoint is kept. A generated folder ZIP uses one stream.
+
+4. Temporary address expired, 401/403/404, redirect or login page
+   The original Dropbox share link is preferred and opened again on
+   recoverable errors. The worker checks media and ZIP types where
+   applicable and rejects HTML masquerading as a resumable file.
+   A refreshed share URL can reuse a checkpoint when the share identity,
+   strong ETag, size and prefix match. Revoked access, browser-only
+   authentication and a new direct URL require a valid source.
+
+5. Corrupted output, wrong file, file changed while paused
+   Checkpoint recovery compares the source size, sampled prefix and a
+   strong ETag when available. Verification checks completed size and
+   the sampled prefix, MP4 header or ZIP structure where applicable.
+   Paste a trusted SHA-256 to verify the entire file. The checks cannot
+   establish whole-file integrity without a trusted checksum.
+
+6. Disk full, FAT32 file size limit, cannot write or rename
+   The app tests write access and checks supported local destinations
+   for available space before a fresh download and the FAT32 size limit.
+   The drive can still fill during a transfer, and network or redirected
+   folders may enforce their own limits. Partial files are kept.
+
+7. Crash, duplicate, invalid filename, lost checkpoint
+   aria2 saves checkpoints periodically. The app locks the output name
+   during use, rejects invalid Windows names, avoids overwriting existing
+   output and refuses to guess progress if a checkpoint half is missing.
+   Work since aria2's last saved checkpoint may need to be fetched again.
+
+8. Slow speeds, proxy/VPN or security software, too many connections
+   Normal mode lets you choose connections and an optional speed cap.
+   Brutal uses up to 16 with no cap. For resumable files, the first
+   retryable failure switches that run to one connection and normal retries.
+   Server and network limits still apply. The app does not change your
+   proxy, VPN, security software or system settings.
+
+SOURCE NOTES
+IDM FAQ index and 99% / temporary file support:
+https://www.internetdownloadmanager.com/register/new_faq/functions_main.cgi
+https://www.internetdownloadmanager.com/register/new_faq/problems4.html
+https://www.internetdownloadmanager.com/register/new_faq/problems5.html
+https://www.internetdownloadmanager.com/register/new_faq/problems8.html
+IDM temporary links and damaged downloads:
+https://www.internetdownloadmanager.com/register/new_faq/sites2_3.html
+https://www.internetdownloadmanager.com/support/data_corruption.html
+FDM reports and maintainer replies on expired URLs, lost resume and 99%:
+https://www.freedownloadmanager.org/blog/?p=508
+FDM HTTP fixes, file naming and crashes:
+https://www.freedownloadmanager.org/blog/?p=706
+https://www.freedownloadmanager.org/zh/changelog.htm
+HTTP byte ranges and validator behavior:
+https://www.rfc-editor.org/rfc/rfc9110.html#name-range-requests
+Windows filesystem file size limits:
+https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/4e3695bd-7574-4f24-a223-b4679c065b63

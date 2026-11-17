@@ -1,0 +1,19 @@
+Dropbox Downloader for Mac
+
+Choose the ZIP for your Mac chip. The app requires macOS 14 or newer.
+1. Extract the ZIP and open the folder.
+2. Move Dropbox Downloader.app to Applications.
+3. Open Dropbox Downloader from Applications.
+
+Node.js and aria2 are included. The app is ad hoc signed for testing.
+macOS may block the first launch because Apple hasn't notarized this build.
+If you trust the person who gave you the build and decide to run it,
+see Apple's instructions for allowing that specific app:
+https://support.apple.com/102445
+
+First test a small Dropbox file, then a large file you can pause and resume.
+Use History and Open text log to see what happened.
+
+aria2 is distributed as a separate executable under GPL-2.0-or-later.
+Its corresponding source is in ThirdParty. License notices are included
+inside the app under Contents/Resources/ThirdParty.

@@ -1,0 +1,5 @@
+**/build/
+**/dist/
+**/payload.zip
+**/aria2c.exe
+.DS_Store
