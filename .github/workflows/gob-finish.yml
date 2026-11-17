@@ -1,0 +1,63 @@
+name: Finish GOB Apple Silicon release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  mac:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and verify GOB Mac
+        working-directory: mac
+        run: bash Scripts/package-mac.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GOB-${{ matrix.runner }}
+          path: mac/dist/*.zip
+          if-no-files-found: error
+  release:
+    needs: [mac]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: GOB-Windows
+          path: release-files
+          run-id: 44054788614
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: GOB-macos-15-intel
+          path: release-files
+          run-id: 44054788614
+          github-token: ${{ github.token }}
+      - name: Generate checked update manifest
+        shell: python
+        run: |
+          import hashlib,json,pathlib
+          root=pathlib.Path('release-files')
+          names={'windows':'GOB.exe','mac-arm64':'GOB-Mac-Apple-Silicon.zip','mac-x64':'GOB-Mac-Intel.zip'}
+          assets={}
+          for platform,name in names.items():
+              file=root/name
+              assets[platform]={'url':'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/gob-v1.0.0/'+name,'size':file.stat().st_size,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()}
+          (root/'gob-update.json').write_text(json.dumps({'version':'1.0.0','assets':assets},indent=2))
+      - name: Publish GOB release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create gob-v1.0.0 release-files/* --target "$GITHUB_SHA" --title "GOB 1.0.0 — Grab Our Bytes" --notes "GOB for Windows and macOS. Includes the GOB icon, Start menu branding, update checks and checksum-verified update downloads. Mac builds are ad hoc signed and have not been notarized."
