@@ -1,0 +1,26 @@
+name: Repair GOB Windows packaging
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Normalize Windows encoding and save destination
+        shell: python
+        run: |
+          from pathlib import Path
+          for p in Path('windows').glob('*.ps1'):
+              s=p.read_text(encoding='utf-8-sig').lstrip('\ufeff')
+              if p.name=='Dropbox-Downloader-GUI.ps1':
+                  s=s.replace("$directory = Add-Control TextBox $PSScriptRoot", "$defaultDownloadFolder = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'\nif (-not [IO.Directory]::Exists($defaultDownloadFolder)) { $defaultDownloadFolder = [Environment]::GetFolderPath('UserProfile') }\n$directory = Add-Control TextBox $defaultDownloadFolder")
+              p.write_text(s,encoding='utf-8-sig')
+      - name: Commit Windows repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add windows
+          git commit -m 'Normalize script encoding and default GOB downloads to Downloads'
+          git push
