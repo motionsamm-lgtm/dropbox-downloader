@@ -1,8 +1,16 @@
 name: Release GOB for Windows and Mac
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: New GOB version (increase for every update, for example 1.0.1)
+        required: true
+        default: '1.0.0'
+        type: string
 permissions:
   contents: read
+env:
+  GOB_VERSION: ${{ inputs.version }}
 jobs:
   mac:
     runs-on: ${{ matrix.runner }}
@@ -12,6 +20,25 @@ jobs:
         runner: [macos-26, macos-15-intel]
     steps:
       - uses: actions/checkout@v5
+      - name: Set release version
+        shell: python
+        run: |
+          import os,re,pathlib,plistlib
+          version=os.environ['GOB_VERSION']
+          assert re.fullmatch(r'\d+\.\d+\.\d+',version), 'Use a numeric three-part version.'
+          for root in ['mac/Sources','windows']:
+              for p in pathlib.Path(root).rglob('*'):
+                  if p.suffix in ['.mjs','.ps1','.cs']:
+                      raw=p.read_bytes()
+                      bom=raw.startswith(b'\xef\xbb\xbf')
+                      text=raw.decode('utf-8-sig').replace('1.0.0',version)
+                      p.write_bytes((b'\xef\xbb\xbf' if bom else b'')+text.encode())
+          p=pathlib.Path('mac/Info.plist')
+          d=plistlib.loads(p.read_bytes()); d['CFBundleShortVersionString']=version; d['CFBundleVersion']=version
+          p.write_bytes(plistlib.dumps(d))
+          p=pathlib.Path('mac/Tests/updates.test.mjs')
+          text=p.read_text().replace("version:'1.1.0'", "version:'"+str(int(version.split('.')[0])+1)+".0.0'")
+          p.write_text(text)
       - name: Build and verify GOB Mac
         working-directory: mac
         run: bash Scripts/package-mac.sh
@@ -24,6 +51,25 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Set release version
+        shell: python
+        run: |
+          import os,re,pathlib,plistlib
+          version=os.environ['GOB_VERSION']
+          assert re.fullmatch(r'\d+\.\d+\.\d+',version), 'Use a numeric three-part version.'
+          for root in ['mac/Sources','windows']:
+              for p in pathlib.Path(root).rglob('*'):
+                  if p.suffix in ['.mjs','.ps1','.cs']:
+                      raw=p.read_bytes()
+                      bom=raw.startswith(b'\xef\xbb\xbf')
+                      text=raw.decode('utf-8-sig').replace('1.0.0',version)
+                      p.write_bytes((b'\xef\xbb\xbf' if bom else b'')+text.encode())
+          p=pathlib.Path('mac/Info.plist')
+          d=plistlib.loads(p.read_bytes()); d['CFBundleShortVersionString']=version; d['CFBundleVersion']=version
+          p.write_bytes(plistlib.dumps(d))
+          p=pathlib.Path('mac/Tests/updates.test.mjs')
+          text=p.read_text().replace("version:'1.1.0'", "version:'"+str(int(version.split('.')[0])+1)+".0.0'")
+          p.write_text(text)
       - name: Build and verify GOB EXE
         shell: powershell
         working-directory: windows
@@ -47,17 +93,17 @@ jobs:
       - name: Generate checked update manifest
         shell: python
         run: |
-          import hashlib,json,pathlib
+          import hashlib,json,pathlib,os
           root=pathlib.Path('release-files')
           names={'windows':'GOB.exe','mac-arm64':'GOB-Mac-Apple-Silicon.zip','mac-x64':'GOB-Mac-Intel.zip'}
           assets={}
           for platform,name in names.items():
               file=root/name
-              assets[platform]={'url':'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/gob-v1.0.0/'+name,'size':file.stat().st_size,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()}
-          (root/'gob-update.json').write_text(json.dumps({'version':'1.0.0','assets':assets},indent=2))
+              assets[platform]={'url':'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/gob-v'+os.environ['GOB_VERSION']+'/'+name,'size':file.stat().st_size,'sha256':hashlib.sha256(file.read_bytes()).hexdigest()}
+          (root/'gob-update.json').write_text(json.dumps({'version':os.environ['GOB_VERSION'],'assets':assets},indent=2))
       - name: Publish GOB release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release create gob-v1.0.0 release-files/* --target "$GITHUB_SHA" --title "GOB 1.0.0 — Grab Our Bytes" --notes "GOB for Windows and macOS. Includes the GOB icon, Start menu branding, update checks and checksum-verified update downloads. Mac builds are ad hoc signed and have not been notarized."
+          gh release create "gob-v$GOB_VERSION" release-files/* --target "$GITHUB_SHA" --title "GOB $GOB_VERSION — Grab Our Bytes" --notes "GOB for Windows and macOS. Includes the GOB icon, Start menu branding, update checks and checksum-verified update downloads. Mac builds are ad hoc signed and have not been notarized."
