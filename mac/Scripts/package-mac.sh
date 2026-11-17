@@ -21,11 +21,11 @@ aria_archive="aria2-${aria_version}.tar.xz"
 workspace="$(mktemp -d)"
 trap 'rm -rf "$workspace"' EXIT
 export MACOSX_DEPLOYMENT_TARGET=14.0
-cross_options=()
+configure_options=(--with-appletls)
 if [[ "$arch" = arm64 && "$(uname -m)" = x86_64 ]]; then
     export CC="clang -arch arm64"
     export CXX="clang++ -arch arm64"
-    cross_options=(--host=aarch64-apple-darwin --build=x86_64-apple-darwin)
+    configure_options+=(--host=aarch64-apple-darwin --build=x86_64-apple-darwin)
 fi
 
 download() { /usr/bin/curl --fail --silent --show-error --location --retry 3 --proto '=https' --proto-redir '=https' "$@"; }
@@ -45,7 +45,7 @@ download "https://github.com/aria2/aria2/releases/download/release-$aria_version
   cd "aria2-$aria_version"
   mkdir "$workspace/no-pkg-config"
   PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$workspace/no-pkg-config" \
-    ./configure "${cross_options[@]}" --with-appletls --disable-bittorrent --disable-metalink --disable-nls \
+    ./configure "${configure_options[@]}" --disable-bittorrent --disable-metalink --disable-nls \
       --without-openssl --without-gnutls --without-libnettle --without-libgcrypt \
       --without-libssh2 --without-libcares --without-sqlite3 --without-libxml2 --without-libexpat
   /usr/bin/make -j"$(/usr/sbin/sysctl -n hw.ncpu)"
