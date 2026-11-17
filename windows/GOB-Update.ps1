@@ -1,4 +1,4 @@
-﻿﻿param([ValidateSet('Check','Install')][string]$Mode='Check',[int]$GuiPid=0)
+﻿param([ValidateSet('Check','Install')][string]$Mode='Check',[int]$GuiPid=0)
 $ErrorActionPreference='Stop'
 [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
 $root=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB'

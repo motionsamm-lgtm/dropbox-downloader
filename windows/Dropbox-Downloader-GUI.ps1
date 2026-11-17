@@ -43,7 +43,9 @@ $paste.Add_Click({
 $null = Add-Control Label 'Output filename (optional)' 26 145 608 22
 $nameBox = Add-Control TextBox '' 26 169 608 28
 $null = Add-Control Label 'Save folder' 26 209 350 21
-$directory = Add-Control TextBox $PSScriptRoot 26 232 515 28
+$defaultDownloadFolder = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+if (-not [IO.Directory]::Exists($defaultDownloadFolder)) { $defaultDownloadFolder = [Environment]::GetFolderPath('UserProfile') }
+$directory = Add-Control TextBox $defaultDownloadFolder 26 232 515 28
 $browse = Add-Control Button 'Browse' 550 228 84 33
 $browse.Add_Click({
     $picker = New-Object Windows.Forms.FolderBrowserDialog
