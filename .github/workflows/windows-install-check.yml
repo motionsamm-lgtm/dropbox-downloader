@@ -1,0 +1,63 @@
+name: Verify published GOB Windows installation
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  installation:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify published assets, installation and repeated launch
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Transcript -Path "$env:RUNNER_TEMP\installation-report.txt"
+          try { Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop } catch { Write-Host ('Real-time protection cannot be enabled on this runner: '+$_.Exception.Message) }
+          Get-MpComputerStatus | Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureVersion | Format-List
+          $release = Invoke-RestMethod 'https://api.github.com/repos/motionsamm-lgtm/dropbox-downloader/releases/tags/gob-v1.0.1-rc1'
+          foreach ($name in @('GOB-Setup.exe','GOB-Windows-Portable.zip')) {
+            $asset = $release.assets | Where-Object name -eq $name
+            if (-not $asset -or $asset.digest -notmatch '^sha256:[a-f0-9]{64}$') { throw 'Missing release asset digest.' }
+            $file = Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest $asset.browser_download_url -OutFile $file -UseBasicParsing
+            if ((Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $asset.digest.Substring(7)) { throw 'Published asset hash mismatch.' }
+          }
+          $installed = Join-Path $env:RUNNER_TEMP 'GOB Installed'
+          $history = Join-Path $env:LOCALAPPDATA 'DropboxDownloader\History'
+          New-Item -ItemType Directory -Force $history | Out-Null
+          $sentinel = Join-Path $history 'installation-test-sentinel.txt'
+          'Existing download history must survive installation and uninstall.' | Set-Content $sentinel
+          $before = (Get-FileHash $sentinel).Hash
+          $setup = Start-Process "$env:RUNNER_TEMP\GOB-Setup.exe" -ArgumentList ('/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="{0}" /LOG="{1}"' -f $installed, "$env:RUNNER_TEMP\setup.log") -PassThru
+          if (-not $setup.WaitForExit(60000)) { throw 'Installer timed out.' }
+          if ($setup.ExitCode) { throw ('Installer failed: '+$setup.ExitCode) }
+          $app = Join-Path $installed 'GOB.exe'
+          if (-not (Test-Path $app)) { throw 'Installed GOB executable missing.' }
+          # Close the normal app opened by Setup before testing repeat launches.
+          Get-Process GOB -ErrorAction SilentlyContinue | Where-Object Path -eq $app | ForEach-Object { [void]$_.CloseMainWindow(); if (-not $_.WaitForExit(15000)) { throw 'Installed GUI did not close cleanly.' } }
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'GOB.lnk'
+          $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+          if ($link.TargetPath -ne $app -or $link.IconLocation -notlike "$app,*") { throw 'Start menu shortcut does not target the native app and icon.' }
+          $appHash = (Get-FileHash $app).Hash
+          foreach ($mode in @('--self-test','--smoke-test','--smoke-test')) {
+            $p = Start-Process $app -ArgumentList $mode -PassThru
+            if (-not $p.WaitForExit(30000) -or $p.ExitCode) { throw ('Installed app test failed: '+$mode) }
+          }
+          if ((Get-FileHash $app).Hash -ne $appHash) { throw 'Normal launch modified the application executable.' }
+          if (Test-Path "$env:LOCALAPPDATA\DropboxDownloader\App-GOB-1.0.1") { throw 'Normal launch unexpectedly extracted a versioned payload.' }
+          Start-MpScan -ScanType CustomScan -ScanPath $installed
+          $detections = @(Get-MpThreatDetection | Where-Object { $_.Resources -match 'GOB|GOB Installed' })
+          if ($detections.Count) { $detections | Format-List *; throw 'Defender reported a GOB detection.' }
+          $uninstall = Start-Process (Join-Path $installed 'unins000.exe') -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru
+          if (-not $uninstall.WaitForExit(60000) -or $uninstall.ExitCode) { throw 'Uninstall failed.' }
+          if ((Get-FileHash $sentinel).Hash -ne $before) { throw 'Installation or uninstall changed existing history.' }
+          Write-Host 'PASS: published hashes, standard installer, native shortcut/icon, repeated native launch, app file stability, Defender scan and history-preserving uninstall.'
+          Stop-Transcript
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: GOB-Windows-installation-report
+          path: |
+            ${{ runner.temp }}/installation-report.txt
+            ${{ runner.temp }}/setup.log
