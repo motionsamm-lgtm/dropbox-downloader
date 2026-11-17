@@ -46,7 +46,7 @@ download "https://github.com/aria2/aria2/releases/download/release-$aria_version
 )
 
 bash Build-Mac.command
-app="$PWD/build/Dropbox Downloader.app"
+app="$PWD/build/GOB.app"
 bin="$app/Contents/MacOS"
 resources="$app/Contents/Resources"
 cp "$workspace/$node_name/bin/node" "$bin/node"
@@ -64,7 +64,7 @@ done
 /usr/bin/codesign --verify --strict --deep "$app"
 
 "$bin/node" --version
-"$bin/node" --test Tests/engine.test.mjs
+"$bin/node" --test Tests/*.test.mjs
 "$bin/aria2c" --version
 mkdir -p "$workspace/smoke"
 printf 'original' > "$workspace/smoke/existing"
@@ -82,11 +82,11 @@ cmp "$workspace/smoke/checksums.txt" "$workspace/node-checksums.txt"
 printf '' | "$bin/node" "$resources/backend.mjs" "$workspace/smoke/history" "$bin/DropboxDownloader" "$workspace/smoke" > "$workspace/smoke/worker.jsonl"
 grep -F '"available":true' "$workspace/smoke/worker.jsonl"
 
-package="$workspace/Dropbox Downloader for Mac"
+package="$workspace/GOB for Mac"
 mkdir -p "$package/ThirdParty" dist
 mv "$app" "$package/"
 cp OPEN-MAC-APP.txt "$package/"
 cp "$workspace/$aria_archive" "$package/ThirdParty/"
 cp Scripts/package-mac.sh "$package/ThirdParty/aria2-build-recipe.sh"
-/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$package" "dist/Dropbox-Downloader-Mac-$label.zip"
-/usr/bin/unzip -tq "dist/Dropbox-Downloader-Mac-$label.zip"
+/usr/bin/ditto -c -k --sequesterRsrc --keepParent "$package" "dist/GOB-Mac-$label.zip"
+/usr/bin/unzip -tq "dist/GOB-Mac-$label.zip"

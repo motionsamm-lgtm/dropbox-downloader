@@ -1,4 +1,4 @@
-$script:notifyEnabled = $false
+﻿$script:notifyEnabled = $false
 $script:notifyName = ''
 
 function Show-DownloadNotification([string]$Kind, [string]$Detail) {

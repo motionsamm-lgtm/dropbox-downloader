@@ -12,10 +12,11 @@ foreach ($script in Get-ChildItem -Filter *.ps1) {
 }
 & .\aria2c.exe --version
 if ($LASTEXITCODE) { throw 'aria2 failed to start.' }
-Compress-Archive -Path *.ps1,*.txt,aria2c.exe -DestinationPath payload.zip -Force
+Copy-Item ../assets/GOB.ico .
+Compress-Archive -Path *.ps1,*.txt,aria2c.exe,GOB.ico -DestinationPath payload.zip -Force
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 New-Item -ItemType Directory -Force dist | Out-Null
-& $csc /nologo /target:winexe /out:dist/DropboxDownloader.exe /resource:payload.zip,payload /reference:System.Windows.Forms.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll Launcher.cs
+& $csc /nologo /target:winexe /win32icon:../assets/GOB.ico /out:dist/GOB.exe /resource:payload.zip,payload /reference:System.Windows.Forms.dll /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll Launcher.cs
 if ($LASTEXITCODE) { throw 'Windows EXE compilation failed.' }
-$check = Start-Process .\dist\DropboxDownloader.exe -ArgumentList '--self-test' -PassThru -Wait
+$check = Start-Process .\dist\GOB.exe -ArgumentList '--self-test' -PassThru -Wait
 if ($check.ExitCode) { throw 'Packaged EXE self-test failed.' }

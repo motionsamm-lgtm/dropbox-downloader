@@ -1,4 +1,4 @@
-param([string]$JobFile, [string]$HistoryAttempt)
+﻿param([string]$JobFile, [string]$HistoryAttempt)
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Download-Reliability.ps1')
@@ -214,7 +214,7 @@ try {
     }
     $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
-    Write-Host 'Dropbox Downloader 2.0.5'
+    Write-Host 'GOB 1.0.0'
     $folderZip = $false
     $subfolder = $false
     $brutal = $false

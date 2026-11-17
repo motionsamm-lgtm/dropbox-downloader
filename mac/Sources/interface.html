@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
-<title>Dropbox Downloader</title>
+<title>GOB — Grab Our Bytes</title>
 <style>
 :root { color-scheme: light dark; font: 14px -apple-system,BlinkMacSystemFont,sans-serif; --bg:#f5f5f8; --card:#fff; --ink:#202126; --muted:#64666f; --line:#dedee5; --accent:#005acb; --tint:#e9f2ff }
 @media(prefers-color-scheme:dark) {:root {--bg:#202125;--card:#2a2b30;--ink:#f3f3f6;--muted:#b8bac5;--line:#45464e;--accent:#80b8ff;--tint:#263c56}}
@@ -44,7 +44,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 </head>
 <body>
 <main>
-<header><div class="eyebrow">Dropbox Downloader for Mac</div><h1>Downloads</h1><p class="muted">Save a file or a shared folder ZIP.</p></header>
+<header><div class="eyebrow">GOB — Grab Our Bytes for Mac</div><h1>GOB <span class="muted" style="font-size:14px">1.0.0</span></h1><button id="updates" type="button">Check for updates</button><p class="muted">Save a file or a shared folder ZIP.</p></header>
 <p id="notice" role="alert" hidden></p>
 <div class="grid">
   <section class="panel" aria-labelledby="newTitle">
@@ -156,6 +156,11 @@ function render() {
 }
 window.receive = event => {
   switch (event.type) {
+    case 'update':
+      updateAvailable=event.available;
+      text('updates',event.available?'Update GOB to '+event.version:'Check for updates');
+      if(event.message) notice(event.message);
+      break;
     case 'ready':
       online = event.available; if (!$('destination').value) $('destination').value = event.downloads || '';
       if (!online) notice('Install aria2 with brew install aria2, then reopen the app.'); break;
@@ -175,6 +180,8 @@ window.receive = event => {
   }
   render();
 };
+let updateAvailable=false;
+$('updates').onclick=()=>send({action:updateAvailable?'installUpdate':'checkUpdate'});
 $('browse').onclick = () => send({ action: 'chooseFolder' });
 $('notifications').onchange = () => { if ($('notifications').checked) send({ action: 'notificationPermission' }); };
 $('setup').onsubmit = event => {

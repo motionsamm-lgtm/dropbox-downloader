@@ -1,8 +1,8 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 trap {
-    [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Dropbox Downloader could not open')
+    [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'GOB could not open')
     break
 }
 . (Join-Path $PSScriptRoot 'Download-History.ps1')
@@ -11,7 +11,8 @@ trap {
 [Windows.Forms.Application]::EnableVisualStyles()
 
 $form = New-Object Windows.Forms.Form
-$form.Text = 'Dropbox Downloader 2.0.5'
+$form.Text = 'GOB — Grab Our Bytes'
+$form.Icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'GOB.ico'))
 $form.ClientSize = [Drawing.Size]::new(660, 790)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
@@ -29,7 +30,7 @@ function Add-Control([string]$Type, [string]$Text, [int]$X, [int]$Y, [int]$Width
     return $control
 }
 
-$title = Add-Control Label 'Dropbox Downloader' 24 16 612 36
+$title = Add-Control Label 'GOB — Grab Our Bytes' 24 16 612 36
 $title.Font = [Drawing.Font]::new('Segoe UI Semibold', 20)
 $null = Add-Control Label 'Download a file or save a shared folder as a ZIP.' 26 57 608 24
 
@@ -124,7 +125,7 @@ $historyRoot = Get-HistoryDirectory
 [void][IO.Directory]::CreateDirectory($historyRoot)
 
 function Show-UiError([string]$Message) {
-    [void][Windows.Forms.MessageBox]::Show($form, $Message, 'Dropbox Downloader')
+    [void][Windows.Forms.MessageBox]::Show($form, $Message, 'GOB — Grab Our Bytes')
 }
 
 function Get-SelectedDownload {
@@ -437,6 +438,69 @@ $form.Add_FormClosing({
     if ($choice -ne [Windows.Forms.DialogResult]::Yes) { $eventArgs.Cancel = $true }
 })
 
+# Update checks run in a separate process so network delays never freeze the GUI.
+$updateRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB'
+$updateStatePath = Join-Path $updateRoot 'update-state.json'
+$updateButton = Add-Control Button 'Check for updates' 445 745 175 30
+$script:updateAvailable = $false
+$script:updateCheck = $null
+$script:lastUpdateCheck = [DateTime]::MinValue
+$script:lastUpdateMessage = ''
+function Start-GobUpdate([string]$Mode) {
+    $args = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Mode {1} -GuiPid {2}' -f (Join-Path $PSScriptRoot 'GOB-Update.ps1'), $Mode, $PID
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = Join-Path $PSHOME 'powershell.exe'
+    $startInfo.Arguments = $args
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $script:updateCheck = [Diagnostics.Process]::Start($startInfo)
+    $script:lastUpdateCheck = Get-Date
+}
+$updateButton.Add_Click({
+    if ($script:updateCheck -and -not $script:updateCheck.HasExited) { return }
+    if ($script:updateAvailable) {
+        if ($script:activeJob) { Show-UiError 'Pause or finish the active download before updating GOB.'; return }
+        Start-GobUpdate 'Install'
+        $updateButton.Enabled = $false
+        $updateButton.Text = 'Downloading update...'
+    } else { Start-GobUpdate 'Check'; $updateButton.Text = 'Checking...' }
+})
+$updateTimer = New-Object Windows.Forms.Timer
+$updateTimer.Interval = 1500
+$updateTimer.Add_Tick({
+    try {
+        if (-not $script:updateCheck -or $script:updateCheck.HasExited) {
+            if ((Get-Date) - $script:lastUpdateCheck -gt [TimeSpan]::FromHours(1)) { Start-GobUpdate 'Check' }
+        }
+        if (Test-Path -LiteralPath $updateStatePath) {
+            $updateState = Get-Content -LiteralPath $updateStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($updateState.status -eq 'Available') {
+                $script:updateAvailable = $true
+                $updateButton.Text = 'Update GOB '+$updateState.version
+                if ($script:lastUpdateMessage -ne $updateState.version) {
+                    $script:lastUpdateMessage = $updateState.version
+                    $detail.Text = $updateState.message
+                    [void][Windows.Forms.MessageBox]::Show($form, $updateState.message+' Use the Update GOB button when your download has stopped.', 'GOB update available')
+                }
+            } elseif ($updateState.status -eq 'Ready') { $form.Close() }
+            elseif ($updateState.status -in @('Current','Error','Installed')) {
+                $updateButton.Enabled = $true
+                $updateButton.Text = if ($script:updateAvailable) { 'Retry update' } else { 'Check for updates' }
+            }
+        }
+    } catch { Write-Verbose 'Update status is temporarily unavailable.' }
+})
+try {
+    $shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'GOB.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = Join-Path $updateRoot 'GOB.exe'
+    $shortcut.IconLocation = $shortcut.TargetPath+',0'
+    $shortcut.Description = 'GOB — Grab Our Bytes'
+    $shortcut.Save()
+} catch { Write-Verbose 'The Start menu shortcut could not be created.' }
+$updateTimer.Start()
+
 $guiLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderHistoryWindow')
 $guiLocked = $false
 try {
@@ -448,6 +512,7 @@ try {
     $timer.Start()
     [void]$form.ShowDialog()
 } finally {
+    $updateTimer.Dispose()
     $timer.Dispose()
     $form.Dispose()
     if ($guiLocked) { $guiLock.ReleaseMutex() }

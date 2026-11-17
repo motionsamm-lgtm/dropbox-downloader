@@ -1,4 +1,4 @@
-$script:summaryPath = $null
+﻿$script:summaryPath = $null
 $script:summaryFinished = $false
 $script:summaryTimer = $null
 $script:downloadStage = 'Checking the download settings'

@@ -1,4 +1,4 @@
-function Write-DownloadState([string]$Path, $State) {
+﻿function Write-DownloadState([string]$Path, $State) {
     $tempPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
     try {
         $State | ConvertTo-Json -Compress | Set-Content -LiteralPath $tempPath -Encoding UTF8

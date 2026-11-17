@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Data)
+﻿param([Parameter(Mandatory=$true)][string]$Data)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing

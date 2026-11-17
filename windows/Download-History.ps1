@@ -1,4 +1,4 @@
-$script:historyState = $null
+﻿$script:historyState = $null
 $script:historyAttemptPath = $null
 
 function Get-HistoryDirectory {

@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 700),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
-        window.title = "Dropbox Downloader"
+        window.title = "GOB — Grab Our Bytes"
         window.contentMinSize = NSSize(width: 470, height: 500)
         window.isReleasedWhenClosed = false
         window.contentView = web
@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         let bar = NSMenu()
         let app = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "Quit Dropbox Downloader", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit GOB — Grab Our Bytes", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         app.submenu = appMenu
         bar.addItem(app)
         let edit = NSMenuItem()
@@ -116,6 +116,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         write(["action": "snapshot"])
     }
 
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        alert.messageText = "GOB"
+        alert.informativeText = message
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { result in completionHandler(result == .alertFirstButtonReturn) }
+    }
+
     private func startWorker() {
         let fm = FileManager.default
         let bundledNode = Bundle.main.executableURL?.deletingLastPathComponent().appendingPathComponent("node").path
@@ -140,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
                 Darwin.close(lockFD)
                 lockFD = -1
-                send(["type": "error", "message": "Dropbox Downloader is already open. Return to its original window."])
+                send(["type": "error", "message": "GOB — Grab Our Bytes is already open. Return to its original window."])
                 return
             }
             guard let script = Bundle.main.url(forResource: "backend", withExtension: "mjs"),
@@ -174,6 +184,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
     }
 
+    private func installUpdate(_ archive: String) {
+        guard !active, let bundle = Bundle.main.bundleURL as URL? else { return }
+        let installer = bundle.appendingPathComponent("Contents/Resources/install-update.sh")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [installer.path, archive, bundle.path, String(getpid())]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run(); NSApp.terminate(nil) }
+        catch { showAlert("The update installer could not start. Your current app was kept.") }
+    }
+
     private func receive(_ data: Data) {
         readBuffer.append(data)
         while let newline = readBuffer.firstIndex(of: 10) {
@@ -181,7 +203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             readBuffer.removeSubrange(...newline)
             guard let event = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { continue }
             if event["type"] as? String == "history" { active = event["active"] is String }
-            if event["type"] as? String == "notification",
+            if event["type"] as? String == "installUpdate", let archive = event["archive"] as? String {
+                installUpdate(archive)
+            } else if event["type"] as? String == "notification",
                let title = event["title"] as? String, let body = event["body"] as? String {
                 let content = UNMutableNotificationContent()
                 content.title = title
@@ -209,7 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     private func showAlert(_ message: String) {
         let alert = NSAlert()
-        alert.messageText = "Dropbox Downloader"
+        alert.messageText = "GOB — Grab Our Bytes"
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         if let window, window.isVisible { alert.beginSheetModal(for: window, completionHandler: nil) }
@@ -239,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                     }
                 }
             }
-        case "start", "resume", "pause", "log", "reveal", "workingFolder", "clearPartials":
+        case "start", "resume", "pause", "log", "reveal", "workingFolder", "clearPartials", "checkUpdate", "installUpdate":
             if action == "start" || action == "resume" { active = true }
             write(data)
         default: break

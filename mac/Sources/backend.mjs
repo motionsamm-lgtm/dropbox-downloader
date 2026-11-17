@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants, accessSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
+import { checkUpdate, downloadUpdate } from './updates.mjs';
 import { Downloader, DownloadError } from './engine.mjs';
 
 const [root, helper, downloads] = process.argv.slice(2);
@@ -22,12 +23,32 @@ const app = new Downloader({
 await app.load();
 output({ type: 'ready', downloads, available: Boolean(aria) });
 
+let update=null;
+async function check(manual=false) {
+  try {
+    update=await checkUpdate(process.arch==='arm64'?'mac-arm64':'mac-x64');
+    output({type:'update',available:Boolean(update),version:update?.version,message:manual&&!update?'GOB is up to date.':undefined});
+    if(update) output({type:'notification',title:'GOB update available',body:'Open GOB and click Update to install version '+update.version+'.'});
+  } catch { if(manual) output({type:'error',message:'Could not check updates. Check your connection and GitHub release access.'}); }
+}
+check();
+const updateTimer=setInterval(()=>check(),3600000);
+updateTimer.unref();
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let queue = Promise.resolve();
 async function handle(line) {
   try {
     const msg = JSON.parse(line);
     if (msg.action === 'snapshot') { output({ type: 'ready', downloads, available: Boolean(aria) }); return; }
+    if (msg.action === 'checkUpdate') { await check(true); return; }
+    if (msg.action === 'installUpdate') {
+      if(app.active) throw new DownloadError('Pause or finish your download before updating GOB.');
+      if(!update) { await check(true); return; }
+      output({type:'update',available:false,message:'Downloading and verifying GOB...'});
+      const archive=await downloadUpdate(update,path.join(root,'Updates'));
+      output({type:'installUpdate',archive});
+      return;
+    }
     if (msg.action === 'pause') { app.pause(); return; }
     if (msg.action === 'start' || msg.action === 'resume') {
       if (!aria) throw new DownloadError('Install aria2 with brew install aria2, then reopen this app.');
