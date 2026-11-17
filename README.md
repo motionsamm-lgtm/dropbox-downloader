@@ -2,17 +2,23 @@
 
 A small Dropbox download manager for Windows and macOS, with automatic recovery, saved progress and a goblin appetite for large files.
 
+## Windows detection investigation
+
+Windows Defender reported `Behavior:Win32/DefenseEvasion.A!ml` for GOB 1.0.0 on an affected device. That build has not been cleared by Microsoft. Do not disable protection or add exclusions to run it.
+
+[GOB 1.0.1 Windows test release](https://github.com/motionsamm-lgtm/dropbox-downloader/releases/tag/gob-v1.0.1-rc1) separates the installer from the app and gives the window a GOB process identity. It preserves the transfer engine and existing history. It remains a pre-release pending testing on affected devices, and is not distributed through automatic updates. Mac downloads are unchanged.
+
 ## Download GOB
 
 | Your computer | Download |
 | --- | --- |
-| Windows 64-bit | [GOB.exe](https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/GOB.exe) |
+| Windows 64-bit - test release | [GOB-Setup.exe](https://github.com/motionsamm-lgtm/dropbox-downloader/releases/download/gob-v1.0.1-rc1/GOB-Setup.exe) |
 | Mac with an M-series chip | [GOB for Apple Silicon](https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/GOB-Mac-Apple-Silicon.zip) |
 | Mac with an Intel processor | [GOB for Intel](https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/GOB-Mac-Intel.zip) |
 
 [All releases and version notes](https://github.com/motionsamm-lgtm/dropbox-downloader/releases)
 
-Open the Windows EXE once to create the **GOB** Start menu entry. On Mac, extract the ZIP, move **GOB.app** into Applications, and open it. Mac requires macOS 14 or newer. These builds have no commercial code-signing identity and the Mac app has not been notarized by Apple.
+On Windows, run **GOB-Setup.exe**, choose Install, then open **GOB** from Start. A portable ZIP is also available in the Windows test release; extract the whole folder before opening its GOB.exe. On Mac, extract the ZIP, move **GOB.app** into Applications, and open it. Mac requires macOS 14 or newer. These builds have no commercial code-signing identity and the Mac app has not been notarized by Apple.
 
 ## Use
 
