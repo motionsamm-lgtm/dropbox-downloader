@@ -28,7 +28,9 @@ jobs:
           fi''')
           s=s.replace('./configure --with-appletls','./configure "${cross_options[@]}" --with-appletls')
           a=s.index('"$bin/node" --version');b=s.index('package="$workspace/GOB for Mac"',a)
-          s=s[:a]+'''/usr/bin/lipo -verify_arch arm64 "$bin/node" "$bin/aria2c" "$bin/DropboxDownloader"
+          s=s[:a]+'''for binary in "$bin/node" "$bin/aria2c" "$bin/DropboxDownloader"; do
+          /usr/bin/lipo "$binary" -verify_arch arm64
+          done
           host_node="$(command -v node)"
           "$host_node" --test Tests/*.test.mjs
           # Run the same native helper source for filesystem tests on the Intel build host.
@@ -54,6 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
