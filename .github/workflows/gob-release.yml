@@ -71,12 +71,16 @@ jobs:
           if-no-files-found: error
   mac:
     needs: prepare
-    runs-on: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, arm64]
+        include:
+          - arch: x86_64
+            runner: macos-26-intel
+          - arch: arm64
+            runner: macos-15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -126,12 +130,16 @@ jobs:
           cat > "$RUNNER_TEMP/notes.md" <<'EOF'
           Blue doodle goblin on a matte black tile, with transparent outer corners, on Windows and Mac. Existing download interface, transfer engine, saved progress and history are preserved. Windows includes the native GOB process identity and standard installer from the working Windows test build.
 
-          In GOB, choose Check for updates, then Update GOB after pausing or finishing downloads. The app verifies the release file before installation. Windows installer-upgrade and Mac replacement-helper checks gate publication, alongside build and regression tests. Mac Apple Silicon is cross-compiled and architecture/signature checked on an Intel build host; native Apple Silicon device testing is still needed. Mac builds are ad hoc signed and not notarized. Windows Defender custom scans are checked; the build runner's real-time protection is off, so this is not a Microsoft clearance or a guarantee against future detections.
+          In GOB, choose Check for updates, then Update GOB after pausing or finishing downloads. The app verifies the release file before installation. Windows installer-upgrade and Mac replacement-helper checks gate publication, alongside build and regression tests. Mac packages have architecture, signature and regression checks, with native Intel and Apple Silicon release builders. Mac builds are ad hoc signed and not notarized. Windows Defender custom scans are checked; the build runner's real-time protection is off, so this is not a Microsoft clearance or a guarantee against future detections.
           EOF
           gh release create "gob-v$GOB_VERSION" release-files/* --target '${{ needs.prepare.outputs.sha }}' --latest --title "GOB $GOB_VERSION - Grab Our Bytes" --notes-file "$RUNNER_TEMP/notes.md"
       - name: Verify public anonymous update feed and every update asset
         run: |
-          curl --fail --location --retry 5 --retry-delay 5 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json' -o live-manifest.json
+          for attempt in {1..12}; do
+            curl --fail --location --retry 3 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json' -o live-manifest.json
+            if cmp -s live-manifest.json release-files/gob-update.json; then break; fi
+            sleep 5
+          done
           cmp live-manifest.json release-files/gob-update.json
           python .github/scripts/verify-live-manifest.py live-manifest.json
   live-windows-update:
