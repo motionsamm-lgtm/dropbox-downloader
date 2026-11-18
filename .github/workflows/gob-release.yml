@@ -159,7 +159,14 @@ jobs:
           In GOB, choose Check for updates, then Update GOB after pausing or finishing downloads. The app verifies the release file before installation. Windows installer-upgrade and Mac replacement-helper checks gate publication, alongside build and regression tests. Mac packages have architecture, signature and regression checks. Apple Silicon is cross-compiled on an Intel build machine; native Apple Silicon device testing remains a limitation. Mac builds are ad hoc signed and not notarized. Windows Defender custom scans are checked; the build runner's real-time protection is off, so this is not a Microsoft clearance or a guarantee against future detections.
           EOF
           if [ -f "docs/GOB-$GOB_VERSION.md" ]; then cp "docs/GOB-$GOB_VERSION.md" "$RUNNER_TEMP/notes.md"; fi
-          gh release create "gob-v$GOB_VERSION" release-files/* --target '${{ needs.prepare.outputs.sha }}' --latest --title "GOB $GOB_VERSION - Grab Our Bytes" --notes-file "$RUNNER_TEMP/notes.md"
+          git fetch origin main
+          python - <<'PYCODE'
+          import subprocess
+          changed=subprocess.check_output(['git','diff','--name-only','HEAD','origin/main'],text=True).splitlines()
+          assert all(p.startswith('.github/workflows/') or p.startswith('docs/') or p=='README.md' for p in changed), 'App source changed while building; rebuild before release.'
+          PYCODE
+          publication_sha=$(git rev-parse origin/main)
+          gh release create "gob-v$GOB_VERSION" release-files/* --target "$publication_sha" --latest --title "GOB $GOB_VERSION - Grab Our Bytes" --notes-file "$RUNNER_TEMP/notes.md"
   verify-public:
     needs: [prepare, release]
     runs-on: ubuntu-latest
