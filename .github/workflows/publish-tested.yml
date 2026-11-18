@@ -1,0 +1,72 @@
+name: Publish tested GOB 1.1.0 artifacts
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Confirm successful platform gates and unchanged app source
+        shell: bash
+        run: |
+          gh api repos/motionsamm-lgtm/dropbox-downloader/actions/runs/44282085507/jobs > tested-jobs.json
+          python - <<'PY'
+          import json,subprocess
+          jobs={j['name']:j['conclusion'] for j in json.load(open('tested-jobs.json'))['jobs']}
+          for name in ['windows','mac (arm64, macos-26-intel)','mac (x86_64, macos-26-intel)']:
+              assert jobs.get(name)=='success',(name,jobs.get(name))
+          built=subprocess.check_output(['git','rev-parse','a10304e^{commit}'],text=True).strip()
+          changed=subprocess.check_output(['git','diff','--name-only',built,'HEAD'],text=True).splitlines()
+          assert all(p.startswith('.github/workflows/') or p.startswith('docs/') or p=='README.md' for p in changed),changed
+          print('App source matches the tested version commit:',built)
+          PY
+          if gh release view gob-v1.1.0 >/dev/null 2>&1; then echo 'Release already exists; refusing to overwrite.'; exit 1; fi
+      - name: Retrieve the exact tested artifacts and manifest
+        run: |
+          mkdir release-files
+          gh run download 44282085507 --name GOB-Windows --dir release-files
+          gh run download 44282085507 --name GOB-Mac-arm64 --dir release-files
+          gh run download 44282085507 --name GOB-Mac-x86_64 --dir release-files
+          gh run download 44282085507 --name GOB-update-manifest --dir release-files
+      - name: Verify all update bytes before publication
+        shell: python
+        run: |
+          import json,pathlib,hashlib
+          root=pathlib.Path('release-files');manifest=json.loads((root/'gob-update.json').read_text())
+          assert manifest['version']=='1.1.0'
+          for item in manifest['assets'].values():
+              file=root/item['url'].rsplit('/',1)[1]
+              assert file.stat().st_size==item['size']
+              assert hashlib.sha256(file.read_bytes()).hexdigest()==item['sha256']
+          assert (root/'GOB.exe').read_bytes()==(root/'GOB-Setup.exe').read_bytes()
+          print('All tested update bytes match the original build manifest.')
+      - name: Publish unchanged tested builds
+        run: gh release create gob-v1.1.0 release-files/* --target "$GITHUB_SHA" --latest --title 'GOB 1.1.0 - Folder downloads and controls' --notes-file docs/GOB-1.1.0.md
+      - name: Verify anonymous production update feed
+        run: |
+          for attempt in {1..12}; do
+            curl --fail --location --retry 3 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json' -o live-manifest.json
+            if cmp -s live-manifest.json release-files/gob-update.json; then break; fi
+            sleep 5
+          done
+          cmp live-manifest.json release-files/gob-update.json
+          python .github/scripts/verify-live-manifest.py live-manifest.json
+  verify-old-client:
+    needs: publish
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install through the existing public in-app updater
+        shell: powershell
+        run: ./.github/scripts/test-live-windows-update.ps1 -Version '1.1.0'
