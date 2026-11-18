@@ -21,7 +21,12 @@ function Start-DownloadLog([string]$Path) {
     if (-not [IO.File]::Exists($Path)) {
         Add-DownloadLog 'Download history. This log leaves out Dropbox links and local paths.'
     }
-    Add-DownloadLog '--- Attempt started (Dropbox Downloader 2.0.4) ---'
+    $label = 'GOB'
+    if ($GOBExecutable -and [IO.File]::Exists($GOBExecutable)) {
+        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($GOBExecutable)
+        $label += ' ' + $info.FileMajorPart + '.' + $info.FileMinorPart + '.' + $info.FileBuildPart
+    }
+    Add-DownloadLog "--- Attempt started ($label) ---"
     if ($script:summaryPath) { Write-Host "Text log: $([IO.Path]::GetFileName($Path))" }
 }
 

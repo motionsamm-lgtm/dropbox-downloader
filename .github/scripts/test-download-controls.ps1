@@ -42,6 +42,17 @@ try {
  $clock=[Diagnostics.Stopwatch]::StartNew()
  try { Wait-DownloadRetry 60; throw 'Pause was ignored during a retry delay.' } catch { if ($_.Exception.Message -notlike '*paused by you*') { throw } }
  if ($clock.Elapsed.TotalSeconds -gt 2) { throw 'Retry cancellation was not prompt.' }
+ # Read only the named, trusted function definitions without running a worker.
+ $tokens=$null;$errors=$null
+ $ast=[Management.Automation.Language.Parser]::ParseFile("$root\windows\Dropbox-Downloader.ps1",[ref]$tokens,[ref]$errors)
+ foreach($fn in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Get-DownloadProbe','Get-BytesHash','Test-Mp4Header')},$false)) { Invoke-Expression $fn.Extent.Text }
+ $fakeCurl=Join-Path $folder 'EmptyCurl.cmd'
+ [IO.File]::WriteAllText($fakeCurl,"@echo HTTP/1.1 416 Range Not Satisfiable`r`n@echo Content-Range: bytes */0`r`n@exit /b 0`r`n")
+ $sample=Get-DownloadProbe $fakeCurl 'https://www.dropbox.com/empty-fixture' $false $false
+ if($sample.Problem -or $sample.Size -ne 0 -or $sample.SampleLength -ne 0) { throw 'Empty-file range proof was not recognised.' }
+ $empty=Join-Path $folder 'empty.txt';[IO.File]::WriteAllBytes($empty,[byte[]]@())
+ . "$root\windows\Download-Reliability.ps1"
+ Confirm-DownloadedFile $empty @{Length=0;Prefix=$sample.Prefix;SampleLength=0;FolderZip=$false;VerifyMp4=$false;Checksum=''}
  Write-Host 'PASS: completion, HTTP failure, graceful pause, checkpoint resume, exact tracked files, junction protection, retry cancellation.'
 } finally {
  if ($pauseJob) { $pauseJob | Remove-Job -Force -ErrorAction SilentlyContinue }

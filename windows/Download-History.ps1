@@ -252,7 +252,7 @@ function Get-DropboxLinkKind([string]$Link) {
     if ($uri.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$') { return 'File' }
     if ($uri.Host -notin @('dropbox.com','www.dropbox.com')) { return }
     if ($uri.AbsolutePath -match '^/(scl/fi|s)/[^/]+/[^/]+$' -or
-        $uri.AbsolutePath -match '^/scl/fo/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$') { return 'File' }
+        $uri.AbsolutePath -match '^/(?:scl/fo|sh)/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$') { return 'File' }
     if ($uri.AbsolutePath -match '^/(scl/fo|sh)/[^/]+/[^/]+/?$' -and
         $uri.Query -notmatch '(?:^\?|&)(?:preview|select)=') { return 'Folder' }
 }

@@ -37,7 +37,7 @@ function New-Case([string]$Name) {
  foreach($file in @('a.bin','nested/b.bin')) {
   $id=[Guid]::NewGuid().ToString('N');$childDir=Join-Path (Join-Path $dir 'children') $id;[void][IO.Directory]::CreateDirectory($childDir)
   $target=Join-Path $out $file.Replace('/',[IO.Path]::DirectorySeparatorChar);[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-  @{Name=[IO.Path]::GetFileName($target);Destination=[IO.Path]::GetDirectoryName($target);ExpectedSize=512;ParentWorkerId=$PID;ParentWorkerStart='';Connections=4;SpeedLimit=0} | ConvertTo-Json | Set-Content (Join-Path $childDir 'job.json') -Encoding UTF8
+  @{Name=[IO.Path]::GetFileName($target);Destination=[IO.Path]::GetDirectoryName($target);ExpectedSize=512;ParentWorkerId=$PID;ParentWorkerStart='';Brutal=$true;Connections=4;SpeedLimit=0} | ConvertTo-Json | Set-Content (Join-Path $childDir 'job.json') -Encoding UTF8
   $entries+=@{Id=$id;Remote=$file;Local=$file;Size=512}
  }
  Write-DownloadState (Join-Path $dir 'folder-manifest.json') @{Schema=1;Root=$out;Entries=$entries}
@@ -67,3 +67,8 @@ try {
  if(@($script:historyState.Children|Where-Object Status -eq 'Paused').Count -ne 2){throw 'Not every active file acknowledged pause.'}
 } finally {$pause|Remove-Job -Force -ErrorAction SilentlyContinue;Remove-Item Env:\GOB_FIXTURE_SLOW -ErrorAction SilentlyContinue}
 Write-Host 'PASS: folder aggregation, completed-file preservation, failed-file retry, tracked-file deletion and whole-folder pause.'
+$script:historyAttemptPath=$null;$script:historyState=$null
+$public='https://www.dropbox.com/scl/fo/hsynj5331wvy39wer5egb/h?rlkey=oxhfrqft9ufoo3y0es4a2f8wz&dl=0'
+$listing=Get-PublicFolderManifest $public
+if(@($listing.Files).Count -lt 1){throw 'The public Dropbox press-kit listing returned no files.'}
+Write-Host "PASS: Windows paste-only listing returned $(@($listing.Files).Count) files and $(@($listing.Directories).Count) subfolders without account authentication."

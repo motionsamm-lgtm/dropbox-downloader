@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants, accessSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
-import { checkUpdate, downloadUpdate } from './updates.mjs';
+import { checkUpdate, downloadUpdate, currentVersion } from './updates.mjs';
 import { Downloader, DownloadError } from './engine.mjs';
 
 const [root, helper, downloads] = process.argv.slice(2);
@@ -18,7 +18,7 @@ const invoke = (binary, args) => new Promise((resolve, reject) => {
   child.on('close', code => code === 0 ? resolve() : reject(new Error('Command failed.')));
 });
 const app = new Downloader({
-  root, aria, emit: output, publish: (from, to) => invoke(helper, ['--publish', from, to])
+  root, aria, version: 'GOB ' + currentVersion, emit: output, publish: (from, to) => invoke(helper, ['--publish', from, to])
 });
 await app.load();
 output({ type: 'ready', downloads, available: Boolean(aria) });

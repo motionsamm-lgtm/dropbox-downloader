@@ -282,7 +282,7 @@ try {
         throw 'Paste an HTTPS Dropbox link.'
     }
     $isDirect = $share.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$'
-    $isSharedFolderVideo = $share.AbsolutePath -match '^/scl/fo/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$'
+    $isSharedFolderVideo = $share.AbsolutePath -match '^/(?:scl/fo|sh)/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$'
     if ($folderZip) {
         if ($share.Host -notin @('dropbox.com', 'www.dropbox.com') -or
             $share.AbsolutePath -notmatch '^/(scl/fo|sh)/[^/]+/[^/]+/?$') {
@@ -637,6 +637,9 @@ try {
         'Download stopped\.' { 'Stopped before completion. Use the same settings to resume.'; break }
         default { "Stopped during: $script:downloadStage. See the preceding entries for details." }
     }
+    $diagnostic = [regex]::Replace($failure, '(?i)https?://[^\s]+', '[Dropbox link]')
+    $diagnostic = [regex]::Replace($diagnostic, '(?i)\b[A-Z]:\\[^\r\n]*', '[local path omitted]')
+    Add-DownloadLog ("Reason: " + $diagnostic)
     Finish-DownloadLog $safeReason
     Update-HistoryState 'Failed' $safeReason
     Show-DownloadNotification 'Failed' $safeReason

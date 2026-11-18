@@ -42,9 +42,9 @@ export function parseLink(value) {
   const parts = u.pathname.split('/').filter(Boolean);
   const folderPath = shared && (
     (parts[0] === 'scl' && parts[1] === 'fo' && parts.length >= 4) ||
-    (parts[0] === 'sh' && parts.length === 3)
+    (parts[0] === 'sh' && parts.length >= 3)
   );
-  const nested = folderPath && parts[0] === 'scl' && parts.length > 4;
+  const nested = folderPath && (parts[0] === 'scl' ? parts.length > 4 : parts.length > 3);
   const folder = folderPath && !nested;
   if (!direct && !folderPath && !(shared && (
     (parts[0] === 'scl' && parts[1] === 'fi' && parts.length === 4) ||
@@ -254,8 +254,8 @@ const pauseText = 'Paused. Use Resume to continue.';
 const missingPair = 'A partial or its checkpoint is missing. The saved files were kept.';
 
 export class Downloader {
-  constructor({ root, aria, publish, emit, inspect = probe, execute = runProcess, sleep = delay, discover = discoverFolder }) {
-    Object.assign(this, { root, aria, publish, emit, inspect, execute, sleep, discover });
+  constructor({ root, aria, publish, emit, inspect = probe, execute = runProcess, sleep = delay, discover = discoverFolder, version = 'GOB' }) {
+    Object.assign(this, { root, aria, publish, emit, inspect, execute, sleep, discover, version });
     this.jobs = new Map();
     this.active = null;
   }
@@ -294,6 +294,7 @@ export class Downloader {
   }
 
   async log(job, message) {
+    message = message.replace(/https?:\/\/\S+/g,'[Dropbox link]').replace(/'\/[^']*'/g,"'[local path omitted]'");
     try {
       await fs.appendFile(this.jobPath(job, 'download.log.txt'), `[${iso()}] ${message}\n`, { mode: 0o600 });
     } catch {
@@ -367,7 +368,10 @@ export class Downloader {
       return (await Promise.all(children.map(child => this.partialFiles(child)))).flat();
     }
     const names = await fs.readdir(job.destination);
+    const recorded = job.partial && path.dirname(job.partial) === job.destination &&
+      path.basename(job.partial).endsWith(`.${job.id}.part`) ? path.basename(job.partial) : null;
     return names.filter(name => name === `.${job.id}.part` || name.startsWith(`.${job.id}.part.`) ||
+      (recorded && (name === recorded || name.startsWith(recorded + '.'))) ||
       name === `${job.name}.${job.id}.part` || name.startsWith(`${job.name}.${job.id}.part.`))
       .map(name => path.join(job.destination, name));
   }
@@ -439,7 +443,7 @@ export class Downloader {
 
   async runFolder(job, signal) {
     const started = Date.now();
-    await this.log(job, '--- Folder attempt started. Files download separately; ZIP mode is not used. ---');
+    await this.log(job, `--- Folder attempt started (${this.version}). Files download separately; ZIP mode is not used. ---`);
     try {
       if (!job.listed) {
         await this.status(job,'Listing','Listing all folder pages and subfolders before starting files.');
@@ -546,7 +550,8 @@ export class Downloader {
     const started = Date.now();
     let streamOnly = job.folder || job.onePass;
     const legacy = path.join(job.destination, `.${job.id}.part`);
-    const partial = job.partial || ((await fileInfo(legacy)) ? legacy : path.join(job.destination, `${job.name}.${job.id}.part`));
+    const visibleName = job.name.startsWith('.') ? 'GOB' + job.name : job.name;
+    const partial = job.partial || ((await fileInfo(legacy)) ? legacy : path.join(job.destination, `${visibleName}.${job.id}.part`));
     job.partial = partial;
     const control = partial + '.aria2';
     const pair = async () => {
@@ -561,7 +566,7 @@ export class Downloader {
     };
     job.metrics = null;
     job.recovery = false;
-    await this.log(job, '--- Attempt started ---');
+    await this.log(job, `--- Attempt started (${this.version}) ---`);
     try {
       await this.status(job, 'Checking', 'Checking the link and saved progress.');
       if (job.notifications) this.emit({ type: 'notification', title: 'Download started', body: job.name });
