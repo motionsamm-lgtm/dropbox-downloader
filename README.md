@@ -18,7 +18,11 @@ On Windows, run **GOB-Setup.exe**, choose Install, then open **GOB** from Start.
 
 ## Use
 
-Paste a Dropbox link, choose where to save the file and start. Brutal starts enabled and falls back after retryable errors. History tracks downloads and one log per download. Folder ZIPs and servers that refuse ranges need a fresh transfer after interruption. Saved data folder and Clear partials help manage disk space.
+Paste a Dropbox file or public folder link, choose where to save it and start. New folder jobs discover the complete file list and download the files separately into their original folder structure, shown as one expandable History entry. No Dropbox account connection is required. If GOB cannot confirm the complete listing, it stops clearly instead of silently downloading a ZIP.
+
+Use **Pause** to save progress and stop transfers or retries, then **Resume** to continue unfinished files. Completed folder files are kept. **Remove from list** keeps files and archives the job record; **Delete files** asks first and moves only tracked files to Recycle Bin or Trash, leaving unrelated files alone.
+
+Brutal starts enabled and reduces connections after retryable failures. History keeps one evolving log per download, including attempts, recovery, progress and finish times. Servers that refuse ranges may require a file to restart. Existing folder ZIP jobs retain their original one-stream limitations; ZIP progress cannot be converted into separate file checkpoints. Password-protected, sign-in-only and download-disabled folders are not supported by paste-only listing. See [GOB 1.1.0 notes](docs/GOB-1.1.0.md).
 
 ## Updates
 
@@ -32,13 +36,14 @@ Older Dropbox Downloader builds need the first GOB installation manually. Subseq
 | --- | --- |
 | [windows](windows/) | GUI, transfer worker, updater, EXE launcher and build script |
 | [mac](mac/) | Native app host, interface, worker, updater and regression tests |
+| [shared](shared/) | Validated paste-only Dropbox folder listing adapter |
 | [assets](assets/) | GOB icon resources |
 | [.github/workflows](.github/workflows/) | Build and release automation |
 | [docs/archive](docs/archive/) | Earlier build workflows |
 
 ## Publish a new update
 
-Open Actions, select **Release GOB for Windows and Mac**, and choose **Run workflow**. Enter a new three-part version such as **1.0.3**. Increase it for every release. The workflow stamps the version into both apps, builds all three downloads, runs the checks, and publishes the release with its update manifest only after the platform jobs pass. Existing release tags are kept and cannot be reused by this workflow.
+Open Actions, select **Release GOB for Windows and Mac**, and choose **Run workflow**. Enter a new three-part version such as **1.1.1**. Increase it for every release. The workflow stamps the version into both apps, builds all three downloads, runs the checks, and publishes the release with its update manifest only after the platform jobs pass. Existing release tags are kept and cannot be reused by this workflow.
 
 Source changes should be committed before running a release. Apps learn about new versions when the release is published, rather than from source commits alone.
 
@@ -46,7 +51,6 @@ Source changes should be committed before running a release. Apps learn about ne
 
 Transfer and updater regression tests run with `node --test mac/Tests/*.test.mjs`. Windows checks cover native window ownership, engine startup, old-to-new installation, Start menu identity, repeated launches and retained history. Mac Intel checks include native host compilation, signature structure, HTTPS through the bundled aria2 and the actual old replacement helper. Apple Silicon is cross-compiled and architecture/signature checked on an Intel builder; native Apple Silicon device testing remains a limitation.
 
-Publication generates the update manifest from the actual release bytes. Public downloads and hashes are verified, then an actual Windows 1.0.1 client checks and installs the update through the public production feed. Interactive behavior and real Dropbox downloads still benefit from device testing.
+Publication generates the update manifest from the actual release bytes. Public downloads and hashes are verified, then an actual Windows 1.0.1 client checks and installs the update through the public production feed. Both Windows and native Mac Intel tests download a public 20-file Dropbox folder, pause/restart it and verify every file. Regression checks cover folder pagination and nested paths, failed listings, interrupted transfers, retry cancellation and deletion ownership. Mac native tests verify Trash preserves unrelated files. Interactive behavior still benefits from device testing.
 
 Windows Defender custom scans run during release builds. Hosted Windows runners have real-time protection off, so these scans are not a Microsoft clearance. The earlier GOB 1.0.0 behavior detection is documented in the release history; use the current native-host installer and keep antivirus protection enabled.
-
