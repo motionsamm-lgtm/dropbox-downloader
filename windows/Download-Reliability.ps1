@@ -1,7 +1,7 @@
 ﻿function Write-DownloadState([string]$Path, $State) {
     $tempPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
     try {
-        $State | ConvertTo-Json -Compress -Depth 12 | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        ConvertTo-Json -InputObject $State -Compress -Depth 12 | Set-Content -LiteralPath $tempPath -Encoding UTF8
         if ([IO.File]::Exists($Path)) {
             Move-Item -LiteralPath $tempPath -Destination $Path -Force
         } else {

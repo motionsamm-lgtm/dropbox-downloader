@@ -282,7 +282,7 @@ export class Downloader {
   jobPath(job, name) { return path.join(this.root, job.id, name); }
 
   send() {
-    const jobs = [...this.jobs.values()].sort((a, b) => b.created.localeCompare(a.created)).map(({ link, source, ready, entries, ...view }) => ({ ...view, canFinish: Boolean(ready) }));
+    const jobs = [...this.jobs.values()].sort((a, b) => b.created.localeCompare(a.created)).map(({ link, source, ready, entries, directories, ...view }) => ({ ...view, canFinish: Boolean(ready) }));
     this.emit({ type: 'history', jobs, active: this.active?.id ?? null });
   }
 
@@ -481,7 +481,7 @@ export class Downloader {
       let parallelLimit = job.brutal ? 3 : 1;
       const update = () => {
         if (children.some(child=>child.recovery)) parallelLimit = 1;
-        job.children = children.map((child,index)=>({id:child.id,name:job.entries[index].remote,status:child.status,metrics:child.metrics}));
+        job.children = children.slice(0,500).map((child,index)=>({id:child.id,name:job.entries[index].remote,status:child.status,metrics:child.metrics}));
         job.completedFiles=children.filter(child=>child.status==='Completed').length;
         job.fileCount=children.length;
         job.metrics={total:job.entries.reduce((sum,e)=>sum+e.size,0),done:children.reduce((sum,child,index)=>sum+(child.status==='Completed'?job.entries[index].size:Math.min(job.entries[index].size,child.metrics?.done||0)),0),

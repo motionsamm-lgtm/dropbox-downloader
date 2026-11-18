@@ -208,9 +208,11 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 $stage=if($state){[string]$state.Status}else{'Queued'}
                 if($stage -eq 'Completed'){$done+=[long]$entry.Size;$finished++}
                 elseif($state.Metrics){$done+=[Math]::Min([long]$entry.Size,[long]$state.Metrics.Completed);if($active.ContainsKey($entry.Id)){$speed+=[long]$state.Metrics.Speed}}
-                $views+=@{Id=$entry.Id;Name=$entry.Remote;Status=$stage}
+                if ($views.Count -lt 500) { $views+=@{Id=$entry.Id;Name=$entry.Remote;Status=$stage} }
             }
             $script:historyState.Children=$views
+            $script:historyState.FileCount=@($manifest.Entries).Count
+            $script:historyState.CompletedFileCount=$finished
             $script:historyState.Metrics=@{Total=$total;Completed=$done;Speed=$speed;Connections=$active.Count;Estimated=$false}
             $message="$finished of $(@($manifest.Entries).Count) files complete."
             Update-HistoryState $(if($pausing){'Pausing'}else{'Running'}) $message

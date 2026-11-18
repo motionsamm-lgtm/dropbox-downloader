@@ -184,7 +184,7 @@ function Update-SelectedDownload {
         $progress.Value = [int][Math]::Floor($metrics.Percent)
         $detail.Text = "$($metrics.ProgressText)   |   $($metrics.SpeedText)   |   ETA $($metrics.EtaText)"
         if ($metrics.Estimated) { $detail.Text += '  (from saved pieces)' }
-        if ($state.IsFolder) { $detail.Text += '   |   ' + @($state.Children | Where-Object Status -eq 'Completed').Count + '/' + @($state.Children).Count + ' files' }
+        if ($state.IsFolder) { $detail.Text += '   |   ' + $state.CompletedFileCount + '/' + $state.FileCount + ' files'; if ($state.FileCount -gt 500) { $detail.Text += ' (first 500 rows shown)' } }
         if ($state.RecoveryMode) { $detail.Text += '   |   Recovery: 1 connection' }
     } else {
         $fraction = if ($stage -eq 'Verifying') { 99.9 } else { $selected.LastPercent }
@@ -246,6 +246,12 @@ function Update-DownloadHistory {
             Sort-Object Name -Descending | Select-Object -First 1
         $record.State = $null
         if ($last) { $record.State = Read-HistoryState $last.FullName }
+        if ($record.State.IsFolder) {
+            try {
+                $children = @(Get-Content -LiteralPath (Join-Path $entry.FullName 'children-live.json') -Raw -Encoding UTF8 | ConvertFrom-Json)
+                $record.State | Add-Member -NotePropertyName Children -NotePropertyValue $children -Force
+            } catch { $record.State | Add-Member -NotePropertyName Children -NotePropertyValue @() -Force }
+        }
         $record.Attempt = $last
         $record.Status = Get-HistoryStatus $record.State
         $workerAlive = (Test-HistoryProcess $record.State.ProcessId $record.State.ProcessStart) -or
@@ -460,10 +466,10 @@ function Remove-SelectedDownload([bool]$DeleteFiles) {
         Add-Type -AssemblyName Microsoft.VisualBasic
         foreach ($file in $files) {
             Assert-NoDownloadLinks $file
-            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file, 'OnlyErrorDialogs', 'SendToRecycleBin')
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file, 'AllDialogs', 'SendToRecycleBin', 'ThrowException')
         }
     }
-    Start-DownloadLog (Get-HistoryLogPath $selected.Directory)
+    $script:summaryPath = Get-HistoryLogPath $selected.Directory
     Add-DownloadLog $(if ($DeleteFiles) { 'Removed from History. Tracked download files were moved to Recycle Bin.' } else {
         'Removed from History. Downloaded files and saved progress were kept.' })
     $archive = Join-Path $historyRoot 'Removed'
@@ -511,7 +517,7 @@ $clearPartial.Add_Click({
         if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
         Add-Type -AssemblyName Microsoft.VisualBasic
         foreach ($file in $files) {
-            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file.FullName, 'OnlyErrorDialogs', 'SendToRecycleBin')
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file.FullName, 'AllDialogs', 'SendToRecycleBin', 'ThrowException')
         }
         $detail.Text = 'Saved partials moved to Recycle Bin. Empty Recycle Bin to reclaim storage.'
     } catch { Show-UiError $_.Exception.Message }

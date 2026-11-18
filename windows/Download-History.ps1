@@ -19,7 +19,15 @@ function Read-HistoryState([string]$Path) {
 }
 
 function Add-HistoryState([string]$Path, $State) {
-    $State | ConvertTo-Json -Compress -Depth 12 | Add-Content -LiteralPath $Path -Encoding UTF8
+    $record = $State
+    if ($State.IsFolder -and $State -is [Collections.IDictionary]) {
+        $record = @{}
+        foreach ($key in $State.Keys) { if ($key -ne 'Children') { $record[$key] = $State[$key] } }
+        # Keep changing child rows in one replaceable snapshot, rather than
+        # appending the entire file list to History on every progress update.
+        Write-DownloadState (Join-Path ([IO.Path]::GetDirectoryName($Path)) 'children-live.json') @($State.Children)
+    }
+    $record | ConvertTo-Json -Compress -Depth 12 | Add-Content -LiteralPath $Path -Encoding UTF8
 }
 
 function Update-HistoryState([string]$Status, [string]$Message, [int]$Port = 0, [string]$Token = '') {
