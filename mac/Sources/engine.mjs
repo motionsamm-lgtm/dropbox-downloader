@@ -160,8 +160,10 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
       throw new DownloadError(`Dropbox returned HTTP ${code} while checking the link.`, code, wait);
     }
     if (code === 200 && !folder && !onePass) {
+      const zipResponse = /application\/(?:x-zip-compressed|zip)/i.test(response.headers.get('content-type') || '') ||
+        /filename[^\r\n]*\.zip(?:[";\s]|$)/i.test(response.headers.get('content-disposition') || '');
       await response.body?.cancel();
-      throw new DownloadError('Dropbox did not accept a byte-range request.', 200);
+      throw Object.assign(new DownloadError('Dropbox did not accept a byte-range request.', 200), {zipResponse});
     }
     if (response.headers.get('content-encoding') &&
         response.headers.get('content-encoding') !== 'identity') {
@@ -370,9 +372,12 @@ export class Downloader {
     const names = await fs.readdir(job.destination);
     const recorded = job.partial && path.dirname(job.partial) === job.destination &&
       path.basename(job.partial).endsWith(`.${job.id}.part`) ? path.basename(job.partial) : null;
-    return names.filter(name => name === `.${job.id}.part` || name.startsWith(`.${job.id}.part.`) ||
+    return names.filter(original => {
+      const name = original.normalize('NFC');
+      return name === `.${job.id}.part` || name.startsWith(`.${job.id}.part.`) ||
       (recorded && (name === recorded || name.startsWith(recorded + '.'))) ||
-      name === `${job.name}.${job.id}.part` || name.startsWith(`${job.name}.${job.id}.part.`))
+      name === `${job.name}.${job.id}.part` || name.startsWith(`${job.name}.${job.id}.part.`);
+    })
       .map(name => path.join(job.destination, name));
   }
 
@@ -403,7 +408,7 @@ export class Downloader {
       // save-folder symlink or recursively remove a user's destination folder.
       for (const file of files) {
         const within = job.kind === 'folder' ? file.startsWith(job.target + path.sep) : path.dirname(file) === job.destination;
-        if (!within || await fs.realpath(path.dirname(file)) !== path.dirname(file) ||
+        if (!within || (await fs.realpath(path.dirname(file))).normalize('NFC') !== path.dirname(file).normalize('NFC') ||
             !(await fileInfo(file))?.isFile()) {
           throw new DownloadError('A saved path changed. No deletion started; inspect the saved-data folder.');
         }
@@ -473,7 +478,7 @@ export class Downloader {
       const children=await this.folderChildren(job);
       const ensureDirectory = async dir => {
         await fs.mkdir(dir,{recursive:true});
-        if (await fs.realpath(dir) !== dir || !(await fileInfo(dir))?.isDirectory()) throw new DownloadError('A folder destination contains a substituted link. Files were kept.');
+        if ((await fs.realpath(dir)).normalize('NFC') !== dir.normalize('NFC') || !(await fileInfo(dir))?.isDirectory()) throw new DownloadError('A folder destination contains a substituted link. Files were kept.');
       };
       await ensureDirectory(job.target);
       for(const dir of job.directories||[]) await ensureDirectory(path.join(job.target,...dir.local.split('/')));
@@ -534,6 +539,7 @@ export class Downloader {
         } catch (e) {
           signal.throwIfAborted();
           last = e;
+          if (e.zipResponse && job.expectedSize === undefined && /^https:\/\/(?:www\.)?dropbox\.com\/(?:scl\/fo|sh)\//.test(link.original)) throw e;
           if (!(e instanceof DownloadError)) last = new DownloadError('The network timed out or could not reach Dropbox.', 503);
           if (attempt === 2 || !httpRetry.has(last.http) || [403, 410].includes(last.http) || last.wait > 120) break;
           const seconds = Math.max(last.wait, last.http === 429 ? 30 : 5);
@@ -591,6 +597,9 @@ export class Downloader {
       try { checked = await this.inspectWithRetry(job, link, signal); }
       catch (error) {
         if (error.http !== 200 || resumed || streamOnly) throw error;
+        if (error.zipResponse && job.expectedSize === undefined && /^https:\/\/(?:www\.)?dropbox\.com\/(?:scl\/fo|sh)\//.test(link.original)) {
+          throw new DownloadError('Dropbox returned a folder ZIP. Paste the whole folder’s share link so GOB can list and download its files separately.');
+        }
         job.onePass = true;
         streamOnly = true;
         await this.log(job, 'Dropbox ignored ranges. Automatically using one stream for this new download.');

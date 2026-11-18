@@ -171,7 +171,7 @@ function Update-SelectedDownload {
     if ($stage -eq 'Completed') {
         $progress.Style = 'Continuous'
         $progress.Value = 100
-        $detail.Text = 'Completed. File verified and saved.'
+        $detail.Text = if ($state.IsFolder) { [string]$state.Message } else { 'Completed. File verified and saved.' }
         if ($state.Manual) {
             $detail.Text = 'Completed. Marked complete by you.'
         } elseif ($selected.RecordedFinished) {

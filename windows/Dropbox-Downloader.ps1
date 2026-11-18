@@ -79,7 +79,9 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
             return @{ Problem = 'The one-pass response was a web page or had no reliable file size.' }
         }
         if (-not $FolderZip -and -not $OnePass -and $status -eq '200') {
-            return @{ Problem = 'Dropbox ignored the byte range. Use One pass only if you want a new download from zero.' }
+            $zipResponse = $response -match '(?im)^Content-Type:[ \t]*application/(?:x-zip-compressed|zip)' -or
+                $response -match '(?im)^Content-Disposition:[^\r\n]*\bfilename[^\r\n]*\.zip(?:[";\s]|$)'
+            return @{ Problem = 'Dropbox ignored the byte range. Use One pass only if you want a new download from zero.'; ZipResponse = $zipResponse }
         }
         if ($status -ne '206' -or $probeExit -ne 0) {
             $delay = 0
@@ -408,6 +410,10 @@ try {
                 break
             }
             if (-not $streamOnly -and $probe.Problem -match 'ignored the byte range') {
+                if ($probe.ZipResponse -and $isSharedFolderVideo -and -not $job.ParentFolder) {
+                    throw 'Dropbox returned a folder ZIP. Paste the whole folder share link so GOB can list its files instead.'
+                }
+                if ($isSharedFolderVideo -and $mode -ne 'raw=1') { continue }
                 $probe = Get-DownloadProbe $curl $url $verifyMp4 $false $true
                 if (-not $probe.Problem) {
                     $streamOnly = $true
