@@ -72,7 +72,21 @@ async function handle(line) {
     }
     if (msg.action === 'clearPartials') {
       if (app.active) throw new DownloadError('Pause the download before clearing saved data.');
-      for (const file of await app.partialFiles(job)) await invoke(helper, ['--trash', file]);
+      const files = await app.partialFiles(job);
+      if (!files.length) throw new DownloadError('No saved partial files were found for this download.');
+      for (const file of files) await invoke(helper, ['--trash', file]);
+      if (job.kind === 'folder') {
+        const store = new Downloader({root:app.jobPath(job,'children')});
+        for (const child of await app.folderChildren(job)) {
+          if (child.status === 'Completed') continue;
+          delete child.ready; delete child.source; child.metrics=null; child.status='Paused';
+          await store.save(child);
+        }
+      }
+      if (job.status === 'Completed') {
+        await app.log(job, 'Old partial files moved to Trash. Verified completed files were kept.');
+        return;
+      }
       delete job.ready;
       delete job.source;
       job.metrics = null;

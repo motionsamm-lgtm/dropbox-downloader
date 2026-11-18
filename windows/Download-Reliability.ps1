@@ -1,7 +1,7 @@
 ﻿function Write-DownloadState([string]$Path, $State) {
     $tempPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
     try {
-        $State | ConvertTo-Json -Compress | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        $State | ConvertTo-Json -Compress -Depth 12 | Set-Content -LiteralPath $tempPath -Encoding UTF8
         if ([IO.File]::Exists($Path)) {
             Move-Item -LiteralPath $tempPath -Destination $Path -Force
         } else {
@@ -68,7 +68,7 @@ function Confirm-DownloadedFile([string]$Path, $State) {
     } else {
         $count = 4096
         if ($State.Prefix) { $count = [int]$State.SampleLength }
-        if ($count -lt 1 -or $count -gt 4096) { throw 'Invalid verification checkpoint.' }
+        if (($count -lt 1 -and -not ($count -eq 0 -and $State.Length -eq 0)) -or $count -gt 4096) { throw 'Invalid verification checkpoint.' }
         $bytes = Get-FilePrefix $Path $count
         if ($State.Prefix -and (Get-BytesHash $bytes) -cne $State.Prefix) {
             throw 'Verification failed: the download begins differently from the Dropbox file. The partial was kept.'
@@ -101,6 +101,7 @@ function Complete-SavedDownload([string]$Target, [string]$Marker, [string]$Sourc
     if ($state.SourceKey -cne $SourceKey) {
         throw 'A completed transfer is waiting to be saved under this filename. Use its original link or choose a different output name.'
     }
+    Add-OwnedDownloadFile $Marker
     $name = [IO.Path]::GetFileName($Target)
     if ([string]$state.PartialName -notmatch ('^' + [regex]::Escape($name) + '\.[0-9a-f]{16}\.part$')) {
         throw 'The saved completion record has an invalid partial filename.'

@@ -19,7 +19,7 @@ function Read-HistoryState([string]$Path) {
 }
 
 function Add-HistoryState([string]$Path, $State) {
-    $State | ConvertTo-Json -Compress | Add-Content -LiteralPath $Path -Encoding UTF8
+    $State | ConvertTo-Json -Compress -Depth 12 | Add-Content -LiteralPath $Path -Encoding UTF8
 }
 
 function Update-HistoryState([string]$Status, [string]$Message, [int]$Port = 0, [string]$Token = '') {
@@ -54,7 +54,8 @@ function Get-HistoryStatus($State) {
 }
 
 function Test-DownloadPause {
-    return ($script:historyAttemptPath -and [IO.File]::Exists($script:historyAttemptPath + '.pause'))
+    return (($script:historyAttemptPath -and [IO.File]::Exists($script:historyAttemptPath + '.pause')) -or
+        ($script:folderParentId -and -not (Test-HistoryProcess $script:folderParentId $script:folderParentStart)))
 }
 
 function Assert-DownloadActive {
@@ -93,6 +94,17 @@ function Assert-NoDownloadLinks([string]$Path) {
 
 function Get-OwnedDownloadFiles([string]$Directory, $State) {
     $files = @()
+    $manifestPath = Join-Path $Directory 'folder-manifest.json'
+    if ([IO.File]::Exists($manifestPath)) {
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($entry in $manifest.Entries) {
+            if ($entry.Id -notmatch '^[a-f0-9]{32}$') { throw 'The saved folder manifest is damaged.' }
+            $childDirectory = Join-Path (Join-Path $Directory 'children') $entry.Id
+            $last = Get-ChildItem -LiteralPath $childDirectory -File -Filter 'attempt-*.jsonl' | Sort-Object Name -Descending | Select-Object -First 1
+            $childState = if ($last) { Read-HistoryState $last.FullName } else { $null }
+            $files += @(Get-OwnedDownloadFiles $childDirectory $childState)
+        }
+    }
     $ledger = Join-Path $Directory 'owned-files.jsonl'
     if ([IO.File]::Exists($ledger)) {
         foreach ($line in Get-Content -LiteralPath $ledger -Encoding UTF8) {
@@ -105,7 +117,7 @@ function Get-OwnedDownloadFiles([string]$Directory, $State) {
         $partial = ([string]$State.Checkpoint).Substring(0, ([string]$State.Checkpoint).Length - 6)
         $files += @($partial, [string]$State.Checkpoint, ($partial + '.resume.json'))
     }
-    if ($State.Output -and $State.Status -eq 'Completed') { $files += [string]$State.Output }
+    if ($State.Output -and $State.Status -eq 'Completed' -and [IO.File]::Exists([string]$State.Output)) { $files += [string]$State.Output }
     $result = @()
     foreach ($file in ($files | Where-Object { $_ } | Select-Object -Unique)) {
         Assert-NoDownloadLinks $file
@@ -240,7 +252,7 @@ function Get-DropboxLinkKind([string]$Link) {
     if ($uri.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$') { return 'File' }
     if ($uri.Host -notin @('dropbox.com','www.dropbox.com')) { return }
     if ($uri.AbsolutePath -match '^/(scl/fi|s)/[^/]+/[^/]+$' -or
-        $uri.AbsolutePath -match '^/scl/fo/[^/]+/[^/]+/(?:[^/]+/)*[^/]+\.mp4$') { return 'File' }
+        $uri.AbsolutePath -match '^/scl/fo/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$') { return 'File' }
     if ($uri.AbsolutePath -match '^/(scl/fo|sh)/[^/]+/[^/]+/?$' -and
         $uri.Query -notmatch '(?:^\?|&)(?:preview|select)=') { return 'Folder' }
 }
@@ -387,8 +399,11 @@ function Invoke-RecordedTransfer([string]$Executable, [string[]]$Arguments) {
                 $lastNote = $elapsed
             }
         }
-        Assert-DownloadActive
         $exitCode = if ($null -ne $terminalCode) { $terminalCode } else { $engine.ExitCode }
+        if ($reportedSuccess -or ($null -ne $terminalCode -and $terminalCode -eq 0) -or (-not $pauseClock -and $exitCode -eq 0)) {
+            $script:historyState.EngineFinished = $true
+        }
+        Assert-DownloadActive
         Add-DownloadLog ("Transfer attempt ended after {0:hh\:mm\:ss}. Engine exit code: {1}." -f $clock.Elapsed,$exitCode)
         if ($exitCode -eq 0) {
             $script:historyState.EngineFinished = $true

@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Download-Log.ps1')
 . (Join-Path $PSScriptRoot 'Download-History.ps1')
 . (Join-Path $PSScriptRoot 'Download-Notifications.ps1')
+. (Join-Path $PSScriptRoot 'Download-Folder.ps1')
 
 function Get-TextHash([string]$Text) {
     return Get-BytesHash ([Text.Encoding]::UTF8.GetBytes($Text))
@@ -55,6 +56,9 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
         $response = $blocks[-1]
         $status = [regex]::Match($response, '^HTTP/\S+\s+(\d{3})').Groups[1].Value
         if (-not $status) { $status = 'unavailable' }
+        if ($status -eq '416' -and $response -match '(?im)^Content-Range:[ \t]*bytes \*/0[ \t]*\r?$') {
+            return @{ Size = 0L; Prefix = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'; SampleLength = 0; Tag = '' }
+        }
         if ($FolderZip -and $status -eq '200' -and $probeExit -in @(0, 28, 63)) {
             $zipType = $response -match '(?im)^Content-Type:[ \t]*application/(?:x-zip-compressed|zip)(?:[ \t]*;|[ \t]*\r?$)'
             $zipName = $response -match '(?im)^Content-Disposition:[^\r\n]*\bfilename\*?=[^\r\n;]*\.zip"?[ \t]*(?:;|\r?$)'
@@ -198,10 +202,18 @@ try {
             }
         } finally { $current.Dispose() }
         Update-HistoryState 'Running' 'Opening the saved download settings.'
-        $backgroundLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderBackgroundTransfer')
-        try { $backgroundLocked = $backgroundLock.WaitOne(0) }
-        catch [Threading.AbandonedMutexException] { $backgroundLocked = $true }
-        if (-not $backgroundLocked) { throw 'Another background transfer is already running.' }
+        $preJobPath = Join-Path ([IO.Path]::GetDirectoryName($HistoryAttempt)) 'job.json'
+        $preJob = Get-Content -LiteralPath $preJobPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($preJob.ParentFolder -eq $true) {
+            $script:folderParentId = [int]$preJob.ParentWorkerId
+            $script:folderParentStart = [string]$preJob.ParentWorkerStart
+            if (-not (Test-HistoryProcess $script:folderParentId $script:folderParentStart)) { throw 'The folder worker is no longer active. Resume the folder from History.' }
+        } else {
+            $backgroundLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderBackgroundTransfer')
+            try { $backgroundLocked = $backgroundLock.WaitOne(0) }
+            catch [Threading.AbandonedMutexException] { $backgroundLocked = $true }
+            if (-not $backgroundLocked) { throw 'Another background transfer is already running.' }
+        }
         $jobDirectory = [IO.Path]::GetDirectoryName($HistoryAttempt)
         $JobFile = Join-Path $jobDirectory 'job.json'
         Start-DownloadLog (Get-HistoryLogPath $jobDirectory)
@@ -260,13 +272,17 @@ try {
     } else {
         $inputLink = (Read-Host 'Paste the Dropbox file link or direct download address').Trim()
     }
+    if ($HistoryAttempt -and $folderZip -and $job.FolderMode -eq 'files') {
+        Invoke-FolderDownload $job $inputLink
+        exit 0
+    }
     $share = $null
     if (-not [Uri]::TryCreate($inputLink, [UriKind]::Absolute, [ref]$share) -or
         $share.Scheme -ne 'https' -or $share.UserInfo -or -not $share.IsDefaultPort) {
         throw 'Paste an HTTPS Dropbox link.'
     }
     $isDirect = $share.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$'
-    $isSharedFolderVideo = $share.AbsolutePath -match '^/scl/fo/[^/]+/[^/]+/(?:[^/]+/)*[^/]+\.mp4$'
+    $isSharedFolderVideo = $share.AbsolutePath -match '^/scl/fo/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$'
     if ($folderZip) {
         if ($share.Host -notin @('dropbox.com', 'www.dropbox.com') -or
             $share.AbsolutePath -notmatch '^/(scl/fo|sh)/[^/]+/[^/]+/?$') {
@@ -278,7 +294,7 @@ try {
             throw 'Open the MP4 inside the shared folder and copy its URL, or paste a Dropbox file share link.'
         }
     }
-    $verifyMp4 = $isDirect -or $isSharedFolderVideo
+    $verifyMp4 = $share.AbsolutePath -match '\.mp4$' -or $name -match '\.mp4$'
     $modes = @('dl=1')
     if ($isSharedFolderVideo) { $modes += 'raw=1' }
     if ($isDirect) {
@@ -317,7 +333,7 @@ try {
         if ($sourceExtension -match '^\.[A-Za-z0-9]{1,10}$') { $name += $sourceExtension }
     }
     if ($name.Length -gt 120 -or $name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
-        $name -match '(^\.|\.$|^(CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(?:\.|$))') {
+        ($name -match '(^\.|\.$|^(CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(?:\.|$))' -and -not $job.ParentFolder)) {
         throw 'Use a regular Windows filename with an extension, such as Podcast-19.mp4.'
     }
     if (-not $JobFile) {
@@ -325,11 +341,11 @@ try {
     }
     if ($streamOnly) { $connections = '1' }
     if (-not $connections) { $connections = '4' }
-    if ($connections -notin @('1', '2', '3', '4')) { throw 'Choose 1, 2, 3 or 4.' }
+    if ($connections -notin @('1', '2', '3', '4') -and -not ($job.ParentFolder -and [int]$connections -ge 1 -and [int]$connections -le 16)) { throw 'Choose 1, 2, 3 or 4.' }
     $normalSpeedLimit = $speedLimit
     if ($brutal) {
         $speedLimit = 0
-        if (-not $streamOnly) { $connections = '16' }
+        if (-not $streamOnly) { $connections = if ($job.ParentFolder) { [string]$job.Connections } else { '16' } }
     }
 
 
@@ -410,6 +426,7 @@ try {
             if ($folderZip) { throw 'No download started. Check that Dropbox can download this shared folder as a ZIP.' }
             throw 'No download started. Any saved progress was kept. Check the link in your browser and retry with the same download settings.'
         }
+        if ($job.ParentFolder -eq $true -and [long]$job.ExpectedSize -ne $size) { throw 'This folder file changed size after listing. Saved files were kept. Download the changed folder under a new name.' }
         if ($size -gt 0) { Add-DownloadLog ("Dropbox reported a file size of {0:N2} GiB." -f ($size / 1GB)) }
         $script:downloadStage = 'Preparing the saved checkpoint and destination'
         $identity = Get-TextHash "$url|${size}"

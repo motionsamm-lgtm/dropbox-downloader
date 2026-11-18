@@ -25,7 +25,7 @@ export function localComponent(name) {
  let result=name.normalize('NFC').replace(/[~<>:"|?*]/g,c=>'~'+c.codePointAt(0).toString(16).padStart(4,'0'));
  result=result.replace(/[. ]+$/,s=>[...s].map(c=>'~'+c.charCodeAt(0).toString(16).padStart(4,'0')).join(''));
  if(/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(result))result='~reserved-'+result;
- if(Buffer.byteLength(result,'utf8')>200) {
+ if(Buffer.byteLength(result,'utf8')>100) {
   const digest=createHash('sha256').update(name).digest('hex').slice(0,16);
   result=[...result].slice(0,40).join('')+'~'+digest;
  }

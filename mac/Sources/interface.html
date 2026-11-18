@@ -44,7 +44,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 </head>
 <body>
 <main>
-<header><div class="eyebrow">GOB — Grab Our Bytes for Mac</div><h1>GOB <span class="muted" style="font-size:14px">1.0.2</span></h1><button id="updates" type="button">Check for updates</button><p class="muted">Save a file or a shared folder ZIP.</p></header>
+<header><div class="eyebrow">GOB — Grab Our Bytes for Mac</div><h1>GOB <span class="muted" style="font-size:14px">1.0.2</span></h1><button id="updates" type="button">Check for updates</button><p class="muted">Save a file or download a folder file by file.</p></header>
 <p id="notice" role="alert" hidden></p>
 <div class="grid">
   <section class="panel" aria-labelledby="newTitle">
@@ -69,6 +69,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
     <div class="section-head"><h2 id="historyTitle">History</h2><span class="muted" id="count"></span></div>
     <ul id="jobs"></ul>
     <div id="transfer" hidden>
+      <details id="folderFiles" hidden><summary>Files in this folder</summary><ul id="folderChildren"></ul></details>
       <p id="transferName"></p><p id="transferMessage" class="muted"></p>
       <progress id="progress" max="100" value="0" aria-label="Download progress"></progress>
       <div class="metrics"><span id="percent"></span><span id="bytes"></span><span id="speed"></span><span id="eta"></span></div>
@@ -139,12 +140,17 @@ function render() {
   const done = job.status === 'Completed', m = job.metrics;
   const percentage = done ? 100 : m?.total > 0 ? Math.min(99.9, Math.floor(1000 * m.done / m.total) / 10) : 0;
   text('transferName', job.name);
+  $('folderFiles').hidden = job.kind !== 'folder';
+  if (job.kind === 'folder') {
+    const rows=(job.children || []).map(child=>{const li=document.createElement('li');li.textContent=child.name+' — '+child.status;return li;});
+    $('folderChildren').replaceChildren(...rows);
+  }
   text('transferMessage', paused && active === job.id ? 'Pausing. Saving the checkpoint…' : job.message || job.status);
   text('percent', done ? '100%' : m?.total > 0 ? percentage.toFixed(1) + '%' : '—');
   text('bytes', m ? bytes(m.done) + (m.total > 0 ? ' / ' + bytes(m.total) : '') : '—');
   text('speed', m?.speed > 0 && active === job.id && job.status === 'Downloading' ? (m.speed / 1024 ** 2).toFixed(1) + ' MiB/s' : '— MiB/s');
   text('eta', m?.speed > 0 && m.total > m.done && active === job.id && job.status === 'Downloading' ? 'ETA ' + eta((m.total - m.done) / m.speed) : 'ETA —');
-  if (!m?.total && active === job.id && ['Checking', 'Downloading', 'Verifying'].includes(job.status)) $('progress').removeAttribute('value');
+  if (!m?.total && active === job.id && ['Listing', 'Checking', 'Downloading', 'Verifying'].includes(job.status)) $('progress').removeAttribute('value');
   else $('progress').value = percentage;
   $('pause').hidden = active !== job.id;
   $('pause').disabled = paused;
@@ -153,8 +159,8 @@ function render() {
   $('clearPartials').disabled = Boolean(active) || pending;
   $('resume').hidden = done || Boolean(active);
   $('resume').disabled = pending || !online;
-  text('resume', (job.folder || job.onePass) && !job.canFinish ? 'Restart' : 'Resume');
-  $('refresh').hidden = done || Boolean(active) || Boolean(job.canFinish);
+  text('resume', ((job.folder && job.kind !== 'folder') || job.onePass) && !job.canFinish ? 'Restart' : 'Resume');
+  $('refresh').hidden = done || job.kind === 'folder' || Boolean(active) || Boolean(job.canFinish);
   $('refresh').disabled = pending || !online;
   $('reveal').hidden = !done;
 }
@@ -219,7 +225,7 @@ function resume(changeLink) {
   if (!online || active || pending) return;
   const job = jobs.find(j => j.id === selected);
   if (!job || job.status === 'Completed') return;
-  const restart = (job.folder || job.onePass) && !job.canFinish;
+  const restart = ((job.folder && job.kind !== 'folder') || job.onePass) && !job.canFinish;
   if (!restart && !changeLink) return launchResume(job.id, false);
   dialogJob = { id: job.id, restart };
   editLink = changeLink;
