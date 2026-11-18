@@ -263,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                     }
                 }
             }
-        case "start", "resume", "pause", "log", "reveal", "workingFolder", "clearPartials", "checkUpdate", "installUpdate":
+        case "start", "resume", "pause", "log", "reveal", "workingFolder", "clearPartials", "remove", "deleteFiles", "checkUpdate", "installUpdate":
             if action == "start" || action == "resume" { active = true }
             write(data)
         default: break

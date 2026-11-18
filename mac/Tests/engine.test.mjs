@@ -46,6 +46,76 @@ const success = async (_bin, args) => {
   return 0;
 };
 
+test('remove archives history but keeps download bytes and checkpoints across reload', async t => {
+  const f = await fixture(t, { execute: success });
+  await f.app.start({link, destination:f.destination, brutal:true});
+  await f.app.active.task;
+  const job = f.job();
+  assert.equal(job.status, 'Completed');
+  await f.app.remove(job.id);
+  assert.deepEqual(await fs.readFile(job.target), file);
+  assert.equal(f.app.jobs.size, 0);
+  await f.app.load();
+  assert.equal(f.app.jobs.size, 0);
+  assert.ok(await fs.stat(path.join(f.app.root, 'Removed', job.id, 'job.json')));
+});
+
+test('delete trashes only owned files, keeps unrelated files, and refuses changed final files', async t => {
+  const f = await fixture(t, {execute:success});
+  await f.app.start({link, destination:f.destination});
+  await f.app.active.task;
+  const job = f.job(), unrelated = path.join(f.destination, 'client-project.prproj');
+  await fs.writeFile(unrelated, 'keep');
+  const moved = [];
+  const trash = async p => { moved.push(p); await fs.rename(p, p+'.trashed'); };
+  await f.app.remove(job.id, {deleteFiles:true, trash});
+  assert.deepEqual(moved, [job.target]);
+  assert.equal(await fs.readFile(unrelated,'utf8'), 'keep');
+  const g = await fixture(t, {execute:success});
+  await g.app.start({link, destination:g.destination});
+  await g.app.active.task;
+  const modified = g.job();
+  await fs.writeFile(modified.target, 'replaced');
+  await assert.rejects(g.app.remove(modified.id, {deleteFiles:true, trash}), /changed/);
+  assert.ok(g.app.jobs.has(modified.id));
+});
+
+test('active jobs cannot be removed; pause saves state and Resume finishes the same job', async t => {
+  let began;
+  const started = new Promise(resolve => { began = resolve; });
+  const f = await fixture(t, {execute: async (_bin,args,signal) => {
+    await fs.writeFile(working(args), file);
+    await fs.writeFile(working(args)+'.aria2', control(false));
+    began();
+    await new Promise((resolve,reject) => signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
+  }});
+  await f.app.start({link, destination:f.destination});
+  await started;
+  const job = f.job();
+  await assert.rejects(f.app.remove(job.id), /Pause/);
+  f.app.pause(job.id);
+  await f.app.active.task;
+  assert.equal(job.status, 'Paused');
+  assert.ok(await fs.stat(job.partial+'.aria2'));
+  f.app.execute = success;
+  f.app.launch(job);
+  await f.app.active.task;
+  assert.equal(job.status, 'Completed');
+});
+
+test('delete refuses a substituted save-folder symlink before moving any file', async t => {
+  const f = await fixture(t, {execute:success});
+  await f.app.start({link, destination:f.destination});
+  await f.app.active.task;
+  const job = f.job();
+  const movedFolder = f.destination+'-moved';
+  await fs.rename(f.destination, movedFolder);
+  await fs.symlink(movedFolder, f.destination);
+  let calls=0;
+  await assert.rejects(f.app.remove(job.id,{deleteFiles:true,trash:async()=>{calls++;}}), /path changed/);
+  assert.equal(calls,0);
+});
+
 test('classifies links and separates session tokens from file identity', () => {
   assert.equal(parseLink(link).key, parseLink(link.replace('st=old', 'st=new')).key);
   assert.equal(parseLink(link).name, 'test.mp4');
@@ -179,7 +249,7 @@ test('checksum failure keeps the partial and leaves no final file', async t => {
   assert.match(files[0], /\.part$/);
 });
 
-test('folder ZIP uses one stream and passes unzip verification before publication', async t => {
+test('legacy folder ZIP checkpoints still use one stream and verify before publication', async t => {
   const data = Buffer.from('504b03041400000000008c92665d727958ca07000000070000000b000000666f6f746167652e74787446697874757265504b010214031400000000008c92665d727958ca07000000070000000b0000000000000000000000800100000000666f6f746167652e747874504b0506000000000100010039000000300000000000', 'hex');
   const f = await fixture(t, {
     inspect: async () => ({ total: data.length, count: data.length, prefix: sha(data), tag: '' }),
@@ -191,7 +261,13 @@ test('folder ZIP uses one stream and passes unzip verification before publicatio
       return 0;
     }
   });
-  await f.app.start({ link: 'https://www.dropbox.com/scl/fo/abc/def', name: 'Footage', destination: f.destination, brutal: true });
+  const legacyExecute=f.app.execute,legacyInspect=f.app.inspect;f.app.execute=success;f.app.inspect=async()=>source;
+  await f.app.start({link, name:'Footage.zip', destination:f.destination});
+  await f.app.active.task;
+  const legacy=f.job();
+  await fs.unlink(legacy.target).catch(()=>{});
+  delete legacy.ready; delete legacy.kind; legacy.folder=true;legacy.link='https://www.dropbox.com/scl/fo/abc/def';legacy.status='Interrupted';
+  f.app.execute=legacyExecute;f.app.inspect=legacyInspect;f.app.launch(legacy);
   await f.app.active.task;
   assert.equal(f.job().status, 'Completed');
   assert.deepEqual(await fs.readdir(f.destination), ['Footage.zip']);
@@ -218,4 +294,43 @@ test('custom names retain the source suffix and ignored ranges fall back automat
   assert.equal(f.job().name, 'DAY 1.mp4');
   assert.equal(f.job().status, 'Completed');
   assert.equal(f.job().onePass, true);
+});
+
+const folderLink='https://www.dropbox.com/scl/fo/root/hash?rlkey=public';
+const folderFixture={files:[{remote:'a.mp4',local:'a.mp4',url:link,size:file.length},{remote:'nested/b.mp4',local:'nested/b.mp4',url:link,size:file.length}],directories:[{remote:'nested',local:'nested'}]};
+test('folder files keep their tree, one parent log, aggregate completion and safe deletion',async t=>{
+ const f=await fixture(t,{execute:success,discover:async()=>folderFixture});
+ await f.app.start({link:folderLink,destination:f.destination,name:'Client footage',brutal:true});
+ await f.app.active.task;
+ const job=f.job();assert.equal(job.status,'Completed',job.message);assert.equal(job.completedFiles,2);
+ assert.equal(job.metrics.done,2*file.length);
+ assert.deepEqual(await fs.readFile(path.join(job.target,'nested/b.mp4')),file);
+ const unrelated=path.join(job.target,'editing.prproj');await fs.writeFile(unrelated,'keep');
+ const moved=[];await f.app.remove(job.id,{deleteFiles:true,trash:async p=>{moved.push(p);await fs.rename(p,p+'.trashed');}});
+ assert.equal(moved.length,2);assert.equal(await fs.readFile(unrelated,'utf8'),'keep');
+});
+test('folder resume keeps completed files and retries only unfinished files',async t=>{
+ let attempts=0;
+ const f=await fixture(t,{discover:async()=>folderFixture,execute:async(bin,args)=>{
+  attempts++;if(option(args,'out').startsWith('b.mp4'))return 1;return success(bin,args);
+ }});
+ await f.app.start({link:folderLink,destination:f.destination,name:'Footage'});await f.app.active.task;
+ const job=f.job();assert.equal(job.status,'Failed');assert.equal(job.completedFiles,1);assert.equal(attempts,2);
+ f.app.execute=async(bin,args)=>{assert.ok(option(args,'out').startsWith('b.mp4'));return success(bin,args);};
+ f.app.launch(job);await f.app.active.task;assert.equal(job.status,'Completed',job.message);
+});
+test('folder listing interruption never reports an empty folder as complete',async t=>{
+ const f=await fixture(t,{discover:async()=>{throw new Error('Incomplete folder page');},execute:success});
+ await f.app.start({link:folderLink,destination:f.destination});await f.app.active.task;
+ assert.equal(f.job().status,'Failed');assert.equal(f.job().listed,undefined);
+ assert.deepEqual(await fs.readdir(f.destination),[]);
+});
+
+test('pause at the final byte preserves completion proof for a local-only resume',async t=>{
+ let f;
+ f=await fixture(t,{execute:async(bin,args)=>{await success(bin,args);f.app.pause();return 0;}});
+ await f.app.start({link,destination:f.destination});await f.app.active.task;
+ const job=f.job();assert.equal(job.status,'Paused');assert.ok(job.ready);
+ f.app.inspect=async()=>{throw new Error('A late pause must not need the network again.');};
+ f.app.launch(job);await f.app.active.task;assert.equal(job.status,'Completed',job.message);
 });

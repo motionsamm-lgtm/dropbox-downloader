@@ -1,7 +1,7 @@
 ﻿function Write-DownloadState([string]$Path, $State) {
     $tempPath = "$Path.$([Guid]::NewGuid().ToString('N')).tmp"
     try {
-        $State | ConvertTo-Json -Compress | Set-Content -LiteralPath $tempPath -Encoding UTF8
+        ConvertTo-Json -InputObject $State -Compress -Depth 12 | Set-Content -LiteralPath $tempPath -Encoding UTF8
         if ([IO.File]::Exists($Path)) {
             Move-Item -LiteralPath $tempPath -Destination $Path -Force
         } else {
@@ -68,7 +68,7 @@ function Confirm-DownloadedFile([string]$Path, $State) {
     } else {
         $count = 4096
         if ($State.Prefix) { $count = [int]$State.SampleLength }
-        if ($count -lt 1 -or $count -gt 4096) { throw 'Invalid verification checkpoint.' }
+        if (($count -lt 1 -and -not ($count -eq 0 -and $State.Length -eq 0)) -or $count -gt 4096) { throw 'Invalid verification checkpoint.' }
         $bytes = Get-FilePrefix $Path $count
         if ($State.Prefix -and (Get-BytesHash $bytes) -cne $State.Prefix) {
             throw 'Verification failed: the download begins differently from the Dropbox file. The partial was kept.'
@@ -96,10 +96,12 @@ function Test-CompleteCheckpoint([string]$Control, [long]$Size) {
 }
 
 function Complete-SavedDownload([string]$Target, [string]$Marker, [string]$SourceKey, [string]$Checksum) {
+    Assert-DownloadActive
     $state = Get-Content -LiteralPath $Marker -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($state.SourceKey -cne $SourceKey) {
         throw 'A completed transfer is waiting to be saved under this filename. Use its original link or choose a different output name.'
     }
+    Add-OwnedDownloadFile $Marker
     $name = [IO.Path]::GetFileName($Target)
     if ([string]$state.PartialName -notmatch ('^' + [regex]::Escape($name) + '\.[0-9a-f]{16}\.part$')) {
         throw 'The saved completion record has an invalid partial filename.'
@@ -120,6 +122,7 @@ function Complete-SavedDownload([string]$Target, [string]$Marker, [string]$Sourc
         $state.Checksum = $Checksum
     }
     Confirm-DownloadedFile $candidate $state
+    Assert-DownloadActive
     $script:downloadStage = 'Saving the verified file'
     Update-HistoryState 'Running' 'Saving the verified file under its final name.'
     Write-Host 'Saving the verified file in its destination folder...'
@@ -137,10 +140,11 @@ function Complete-SavedDownload([string]$Target, [string]$Marker, [string]$Sourc
             }
             Add-DownloadLog 'Windows had the completed file locked. Retrying the final rename.'
             Write-Host 'Windows has the completed file locked. Retrying the final rename...' -ForegroundColor Yellow
-            Start-Sleep -Seconds (2 * $attempt)
+            Wait-DownloadRetry (2 * $attempt)
         }
     }
     $savedSize = [long]$state.Length
+    Add-OwnedDownloadFile $Target
     Update-HistoryState 'Completed' 'Download complete. The verified file was saved.'
     Remove-Item -LiteralPath $Marker, "$partial.resume.json", $control -ErrorAction SilentlyContinue
     Add-DownloadLog ("Saved the final file. Verified size: {0:N2} GiB ({1:N0} bytes)." -f ($savedSize / 1GB), $savedSize)

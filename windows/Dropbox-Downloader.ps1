@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Download-Log.ps1')
 . (Join-Path $PSScriptRoot 'Download-History.ps1')
 . (Join-Path $PSScriptRoot 'Download-Notifications.ps1')
+. (Join-Path $PSScriptRoot 'Download-Folder.ps1')
 
 function Get-TextHash([string]$Text) {
     return Get-BytesHash ([Text.Encoding]::UTF8.GetBytes($Text))
@@ -55,6 +56,9 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
         $response = $blocks[-1]
         $status = [regex]::Match($response, '^HTTP/\S+\s+(\d{3})').Groups[1].Value
         if (-not $status) { $status = 'unavailable' }
+        if ($status -eq '416' -and $response -match '(?im)^Content-Range:[ \t]*bytes \*/0[ \t]*\r?$') {
+            return @{ Size = 0L; Prefix = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'; SampleLength = 0; Tag = '' }
+        }
         if ($FolderZip -and $status -eq '200' -and $probeExit -in @(0, 28, 63)) {
             $zipType = $response -match '(?im)^Content-Type:[ \t]*application/(?:x-zip-compressed|zip)(?:[ \t]*;|[ \t]*\r?$)'
             $zipName = $response -match '(?im)^Content-Disposition:[^\r\n]*\bfilename\*?=[^\r\n;]*\.zip"?[ \t]*(?:;|\r?$)'
@@ -75,7 +79,9 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
             return @{ Problem = 'The one-pass response was a web page or had no reliable file size.' }
         }
         if (-not $FolderZip -and -not $OnePass -and $status -eq '200') {
-            return @{ Problem = 'Dropbox ignored the byte range. Use One pass only if you want a new download from zero.' }
+            $zipResponse = $response -match '(?im)^Content-Type:[ \t]*application/(?:x-zip-compressed|zip)' -or
+                $response -match '(?im)^Content-Disposition:[^\r\n]*\bfilename[^\r\n]*\.zip(?:[";\s]|$)'
+            return @{ Problem = 'Dropbox ignored the byte range. Use One pass only if you want a new download from zero.'; ZipResponse = $zipResponse }
         }
         if ($status -ne '206' -or $probeExit -ne 0) {
             $delay = 0
@@ -137,7 +143,7 @@ function Get-FileProbeWithRetry([string]$Curl, [string]$Url, [bool]$VerifyMp4) {
         Add-ProbeLog $probe.Problem
         Add-DownloadLog "Waiting $($probe.RetryDelay) seconds before checking the link again."
         Write-Host ("{0} Checking again in {1}s." -f $probe.Problem, $probe.RetryDelay) -ForegroundColor Yellow
-        Start-Sleep -Seconds $probe.RetryDelay
+        Wait-DownloadRetry $probe.RetryDelay
     }
 }
 
@@ -198,15 +204,24 @@ try {
             }
         } finally { $current.Dispose() }
         Update-HistoryState 'Running' 'Opening the saved download settings.'
-        $backgroundLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderBackgroundTransfer')
-        try { $backgroundLocked = $backgroundLock.WaitOne(0) }
-        catch [Threading.AbandonedMutexException] { $backgroundLocked = $true }
-        if (-not $backgroundLocked) { throw 'Another background transfer is already running.' }
+        $preJobPath = Join-Path ([IO.Path]::GetDirectoryName($HistoryAttempt)) 'job.json'
+        $preJob = Get-Content -LiteralPath $preJobPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($preJob.ParentFolder -eq $true) {
+            $script:folderParentId = [int]$preJob.ParentWorkerId
+            $script:folderParentStart = [string]$preJob.ParentWorkerStart
+            if (-not (Test-HistoryProcess $script:folderParentId $script:folderParentStart)) { throw 'The folder worker is no longer active. Resume the folder from History.' }
+        } else {
+            $backgroundLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderBackgroundTransfer')
+            try { $backgroundLocked = $backgroundLock.WaitOne(0) }
+            catch [Threading.AbandonedMutexException] { $backgroundLocked = $true }
+            if (-not $backgroundLocked) { throw 'Another background transfer is already running.' }
+        }
         $jobDirectory = [IO.Path]::GetDirectoryName($HistoryAttempt)
         $JobFile = Join-Path $jobDirectory 'job.json'
         Start-DownloadLog (Get-HistoryLogPath $jobDirectory)
         $script:historyState.SummaryPath = $script:summaryPath
         Update-HistoryState 'Running' 'Opening the saved download settings.'
+        Assert-DownloadActive
     }
     $aria = Join-Path $PSScriptRoot 'aria2c.exe'
     if (-not [IO.File]::Exists($aria)) {
@@ -259,13 +274,17 @@ try {
     } else {
         $inputLink = (Read-Host 'Paste the Dropbox file link or direct download address').Trim()
     }
+    if ($HistoryAttempt -and $folderZip -and $job.FolderMode -eq 'files') {
+        Invoke-FolderDownload $job $inputLink
+        exit 0
+    }
     $share = $null
     if (-not [Uri]::TryCreate($inputLink, [UriKind]::Absolute, [ref]$share) -or
         $share.Scheme -ne 'https' -or $share.UserInfo -or -not $share.IsDefaultPort) {
         throw 'Paste an HTTPS Dropbox link.'
     }
     $isDirect = $share.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$'
-    $isSharedFolderVideo = $share.AbsolutePath -match '^/scl/fo/[^/]+/[^/]+/(?:[^/]+/)*[^/]+\.mp4$'
+    $isSharedFolderVideo = $share.AbsolutePath -match '^/(?:scl/fo|sh)/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$'
     if ($folderZip) {
         if ($share.Host -notin @('dropbox.com', 'www.dropbox.com') -or
             $share.AbsolutePath -notmatch '^/(scl/fo|sh)/[^/]+/[^/]+/?$') {
@@ -277,7 +296,7 @@ try {
             throw 'Open the MP4 inside the shared folder and copy its URL, or paste a Dropbox file share link.'
         }
     }
-    $verifyMp4 = $isDirect -or $isSharedFolderVideo
+    $verifyMp4 = $share.AbsolutePath -match '\.mp4$' -or $name -match '\.mp4$'
     $modes = @('dl=1')
     if ($isSharedFolderVideo) { $modes += 'raw=1' }
     if ($isDirect) {
@@ -316,7 +335,7 @@ try {
         if ($sourceExtension -match '^\.[A-Za-z0-9]{1,10}$') { $name += $sourceExtension }
     }
     if ($name.Length -gt 120 -or $name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or
-        $name -match '(^\.|\.$|^(CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(?:\.|$))') {
+        ($name -match '(^\.|\.$|^(CON|PRN|AUX|NUL|COM[0-9\u00b9\u00b2\u00b3]|LPT[0-9\u00b9\u00b2\u00b3])(?:\.|$))' -and -not $job.ParentFolder)) {
         throw 'Use a regular Windows filename with an extension, such as Podcast-19.mp4.'
     }
     if (-not $JobFile) {
@@ -324,11 +343,11 @@ try {
     }
     if ($streamOnly) { $connections = '1' }
     if (-not $connections) { $connections = '4' }
-    if ($connections -notin @('1', '2', '3', '4')) { throw 'Choose 1, 2, 3 or 4.' }
+    if ($connections -notin @('1', '2', '3', '4') -and -not ($job.ParentFolder -and [int]$connections -ge 1 -and [int]$connections -le 16)) { throw 'Choose 1, 2, 3 or 4.' }
     $normalSpeedLimit = $speedLimit
     if ($brutal) {
         $speedLimit = 0
-        if (-not $streamOnly) { $connections = '16' }
+        if (-not $streamOnly) { $connections = if ($job.ParentFolder) { [string]$job.Connections } else { '16' } }
     }
 
 
@@ -391,6 +410,10 @@ try {
                 break
             }
             if (-not $streamOnly -and $probe.Problem -match 'ignored the byte range') {
+                if ($probe.ZipResponse -and $isSharedFolderVideo -and -not $job.ParentFolder) {
+                    throw 'Dropbox returned a folder ZIP. Paste the whole folder share link so GOB can list its files instead.'
+                }
+                if ($isSharedFolderVideo -and $mode -ne 'raw=1') { continue }
                 $probe = Get-DownloadProbe $curl $url $verifyMp4 $false $true
                 if (-not $probe.Problem) {
                     $streamOnly = $true
@@ -409,6 +432,7 @@ try {
             if ($folderZip) { throw 'No download started. Check that Dropbox can download this shared folder as a ZIP.' }
             throw 'No download started. Any saved progress was kept. Check the link in your browser and retry with the same download settings.'
         }
+        if ($job.ParentFolder -eq $true -and [long]$job.ExpectedSize -ne $size) { throw 'This folder file changed size after listing. Saved files were kept. Download the changed folder under a new name.' }
         if ($size -gt 0) { Add-DownloadLog ("Dropbox reported a file size of {0:N2} GiB." -f ($size / 1GB)) }
         $script:downloadStage = 'Preparing the saved checkpoint and destination'
         $identity = Get-TextHash "$url|${size}"
@@ -426,6 +450,7 @@ try {
         }
         $partial = Join-Path $destination $partialName
         $control = "$partial.aria2"
+        foreach ($owned in @($partial, $control, ($partial + '.resume.json'))) { Add-OwnedDownloadFile $owned }
         if ($HistoryAttempt) { $script:historyState.Checkpoint = $control }
         $priorFinished = [IO.File]::Exists($partial) -and -not [IO.File]::Exists($control) -and
             ($size -le 0 -or (Get-Item -LiteralPath $partial).Length -eq $size) -and
@@ -487,6 +512,7 @@ try {
         $completeCheckpoint = Test-CompleteCheckpoint $control $size
         if ($completeCheckpoint -or $priorFinished) { Add-DownloadLog 'Saved transfer records show all bytes arrived. Verifying the file locally.' }
         for ($attempt = 0; -not $completeCheckpoint -and -not $priorFinished -and $attempt -lt 6; $attempt++) {
+            Assert-DownloadActive
             $reportedSuccess = $false
             $maxTries = if ($streamOnly) { 1 } elseif ($brutalActive) { 4 } else { 12 }
             $transferOptions = $options + @(
@@ -564,7 +590,7 @@ try {
                 "Waiting ${delay}s before retrying with up to $currentConnections connection(s)."
             }
             Update-HistoryState 'Running' $retryMessage
-            Start-Sleep -Seconds $delay
+            Wait-DownloadRetry $delay
             $freshProbe = Get-FileProbeWithRetry $curl $url $verifyMp4
             if ($freshProbe.Problem) {
                 Add-ProbeLog $freshProbe.Problem
@@ -598,6 +624,13 @@ try {
     }
 } catch {
     $failure = $_.Exception.Message
+    if (Test-DownloadPause) {
+        $message = 'Paused by you. Saved progress was kept. Resume continues where the server supports it.'
+        Add-DownloadLog $message
+        Finish-DownloadLog $message
+        Update-HistoryState 'Paused' $message
+        exit 0
+    }
     $safeReason = switch -Regex ($failure) {
         'SHA-256 mismatch' { 'The checksum did not match. The file was kept as a partial.'; break }
         'Windows could not rename' { 'Windows blocked the final rename. The completed partial was kept for a local retry.'; break }
@@ -610,6 +643,9 @@ try {
         'Download stopped\.' { 'Stopped before completion. Use the same settings to resume.'; break }
         default { "Stopped during: $script:downloadStage. See the preceding entries for details." }
     }
+    $diagnostic = [regex]::Replace($failure, '(?i)https?://[^\s]+', '[Dropbox link]')
+    $diagnostic = [regex]::Replace($diagnostic, '(?i)\b[A-Z]:\\[^\r\n]*', '[local path omitted]')
+    Add-DownloadLog ("Reason: " + $diagnostic)
     Finish-DownloadLog $safeReason
     Update-HistoryState 'Failed' $safeReason
     Show-DownloadNotification 'Failed' $safeReason

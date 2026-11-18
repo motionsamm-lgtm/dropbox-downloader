@@ -13,10 +13,14 @@ trap {
 $form = New-Object Windows.Forms.Form
 $form.Text = 'GOB — Grab Our Bytes'
 $form.Icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'GOB.ico'))
-$form.ClientSize = [Drawing.Size]::new(660, 790)
+$form.ClientSize = [Drawing.Size]::new(660, 830)
 $form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'FixedDialog'
-$form.MaximizeBox = $false
+$form.FormBorderStyle = 'Sizable'
+$form.MinimumSize = [Drawing.Size]::new(650, 600)
+$form.AutoScroll = $true
+$form.AutoScrollMinSize = [Drawing.Size]::new(650, 830)
+$form.ClientSize = [Drawing.Size]::new(660, [Math]::Min(830, [Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 80))
+$form.MaximizeBox = $true
 $form.AutoScaleMode = 'Dpi'
 $form.Font = [Drawing.Font]::new('Segoe UI', 10)
 $form.BackColor = [Drawing.Color]::FromArgb(245, 247, 251)
@@ -32,7 +36,7 @@ function Add-Control([string]$Type, [string]$Text, [int]$X, [int]$Y, [int]$Width
 
 $title = Add-Control Label 'GOB — Grab Our Bytes' 24 16 612 36
 $title.Font = [Drawing.Font]::new('Segoe UI Semibold', 20)
-$null = Add-Control Label 'Download a file or save a shared folder as a ZIP.' 26 57 608 24
+$null = Add-Control Label 'Download a file or a folder as separate, resumable files.' 26 57 608 24
 
 $null = Add-Control Label 'Dropbox link' 26 79 310 21
 $linkBox = Add-Control TextBox '' 26 102 515 28
@@ -84,7 +88,7 @@ function Update-TransferControls {
     $connections.Enabled = $isFile -and -not $brutal.Checked -and -not $onePass.Checked
     $limit.Enabled = -not $brutal.Checked
     if ($kind -eq 'Folder') {
-        $status.Text = 'Detected shared folder. Dropbox will supply a ZIP in one stream.'
+        $status.Text = 'Detected shared folder. GOB will list and download its files separately.'
     } elseif ($kind -eq 'File') {
         $status.Text = 'Detected a single file.'
         if ($onePass.Checked) { $status.Text += ' One pass starts from zero.' }
@@ -119,6 +123,10 @@ $resume.Enabled = $false
 $openLog.Enabled = $false
 $markDone = Add-Control Button 'Mark complete' 325 705 125 30
 $markDone.Enabled = $false
+$pause = Add-Control Button 'Pause download' 458 705 176 30
+$removeDownload = Add-Control Button 'Remove from list...' 27 785 150 30
+$deleteDownload = Add-Control Button 'Delete files...' 187 785 130 30
+$folderFiles = Add-Control Button 'Show files' 325 785 125 30
 $script:jobs = @{}
 $script:activeJob = $false
 $historyRoot = Get-HistoryDirectory
@@ -129,7 +137,7 @@ function Show-UiError([string]$Message) {
 }
 
 function Get-SelectedDownload {
-    if ($history.SelectedItems.Count) { return $script:jobs[[string]$history.SelectedItems[0].Name] }
+    if ($history.SelectedItems.Count) { return $script:jobs[([string]$history.SelectedItems[0].Name).Split(':')[0]] }
 }
 
 function Update-SelectedDownload {
@@ -137,6 +145,10 @@ function Update-SelectedDownload {
     $resume.Enabled = $false
     $openLog.Enabled = $false
     $markDone.Enabled = $false
+    $pause.Enabled = $false
+    $removeDownload.Enabled = $false
+    $deleteDownload.Enabled = $false
+    $folderFiles.Enabled = $false
     if (-not $selected) {
         $progress.Style = 'Continuous'
         $progress.Value = 0
@@ -146,14 +158,20 @@ function Update-SelectedDownload {
 
     $state = $selected.State
     $stage = $selected.Status
-    $resume.Enabled = (-not $script:gobUpdating -and -not $script:activeJob -and $stage -in @('Failed','Interrupted','File found'))
+    $resume.Enabled = (-not $script:gobUpdating -and -not $script:activeJob -and $stage -in @('Paused','Failed','Interrupted','File found'))
+    $folderFiles.Enabled = $selected.Job.FolderMode -eq 'files'
+    $folderFiles.Text = if ($selected.ShowChildren) { 'Hide files' } else { 'Show files' }
+    $pause.Enabled = $stage -in @('Starting','Running','Verifying')
+    $pause.Text = if ($stage -eq 'Pausing') { 'Saving progress...' } elseif ($selected.Job.FolderMode -eq 'files') { 'Pause folder' } else { 'Pause download' }
+    $removeDownload.Enabled = -not $script:activeJob -and -not $script:gobUpdating
+    $deleteDownload.Enabled = -not $script:activeJob -and -not $script:gobUpdating
     $openLog.Enabled = $state.SummaryPath -and [IO.File]::Exists($state.SummaryPath)
     $markDone.Enabled = -not $script:activeJob -and $stage -eq 'File found'
     $metrics = $selected.Metrics
     if ($stage -eq 'Completed') {
         $progress.Style = 'Continuous'
         $progress.Value = 100
-        $detail.Text = 'Completed. File verified and saved.'
+        $detail.Text = if ($state.IsFolder) { [string]$state.Message } else { 'Completed. File verified and saved.' }
         if ($state.Manual) {
             $detail.Text = 'Completed. Marked complete by you.'
         } elseif ($selected.RecordedFinished) {
@@ -166,6 +184,7 @@ function Update-SelectedDownload {
         $progress.Value = [int][Math]::Floor($metrics.Percent)
         $detail.Text = "$($metrics.ProgressText)   |   $($metrics.SpeedText)   |   ETA $($metrics.EtaText)"
         if ($metrics.Estimated) { $detail.Text += '  (from saved pieces)' }
+        if ($state.IsFolder) { $detail.Text += '   |   ' + $state.CompletedFileCount + '/' + $state.FileCount + ' files'; if ($state.FileCount -gt 500) { $detail.Text += ' (first 500 rows shown)' } }
         if ($state.RecoveryMode) { $detail.Text += '   |   Recovery: 1 connection' }
     } else {
         $fraction = if ($stage -eq 'Verifying') { 99.9 } else { $selected.LastPercent }
@@ -180,6 +199,33 @@ function Update-SelectedDownload {
     }
 }
 
+function Update-FolderRows($Record) {
+    if (-not $Record.ChildRows) { $Record.ChildRows = @{} }
+    $wanted = @()
+    if ($Record.ShowChildren) {
+        $offset = 1
+        foreach ($child in $Record.State.Children) {
+            $key = $Record.Row.Name + ':' + $child.Id
+            $wanted += $key
+            if (-not $Record.ChildRows.ContainsKey($key)) {
+                $row = [Windows.Forms.ListViewItem]::new('  ' + [string]$child.Name)
+                $row.Name = $key
+                foreach ($column in 1..5) { [void]$row.SubItems.Add('') }
+                [void]$history.Items.Insert($Record.Row.Index + $offset, $row)
+                $Record.ChildRows[$key] = $row
+            }
+            $Record.ChildRows[$key].SubItems[1].Text = [string]$child.Status
+            $offset++
+        }
+    }
+    foreach ($key in @($Record.ChildRows.Keys)) {
+        if ($key -notin $wanted) { $history.Items.Remove($Record.ChildRows[$key]); $Record.ChildRows.Remove($key) }
+    }
+}
+$folderFiles.Add_Click({
+    $selected = Get-SelectedDownload
+    if ($selected) { $selected.ShowChildren = -not $selected.ShowChildren; Update-DownloadHistory }
+})
 function Update-DownloadHistory {
     $script:activeJob = $false
     foreach ($entry in (Get-ChildItem -LiteralPath $historyRoot -Directory | Sort-Object CreationTimeUtc)) {
@@ -200,8 +246,20 @@ function Update-DownloadHistory {
             Sort-Object Name -Descending | Select-Object -First 1
         $record.State = $null
         if ($last) { $record.State = Read-HistoryState $last.FullName }
+        if ($record.State.IsFolder) {
+            try {
+                $children = @(Get-Content -LiteralPath (Join-Path $entry.FullName 'children-live.json') -Raw -Encoding UTF8 | ConvertFrom-Json)
+                $record.State | Add-Member -NotePropertyName Children -NotePropertyValue $children -Force
+            } catch { $record.State | Add-Member -NotePropertyName Children -NotePropertyValue @() -Force }
+        }
         $record.Attempt = $last
         $record.Status = Get-HistoryStatus $record.State
+        $workerAlive = (Test-HistoryProcess $record.State.ProcessId $record.State.ProcessStart) -or
+            (Test-HistoryProcess $record.State.EngineId $record.State.EngineStart)
+        if ($last -and [IO.File]::Exists($last.FullName + '.pause') -and
+            $record.Status -in @('Starting','Running','Pausing')) {
+            $record.Status = if ($workerAlive) { 'Pausing' } else { 'Interrupted' }
+        }
         $record.RecordedFinished = $null
         if ($record.Status -in @('Failed','Interrupted') -and $record.State.Output -and
             [IO.File]::Exists([string]$record.State.Output)) {
@@ -258,7 +316,8 @@ function Update-DownloadHistory {
         $record.Row.SubItems[2].Text = $progressText
         $record.Row.SubItems[3].Text = $speedText
         $record.Row.SubItems[4].Text = $etaText
-        if ($record.Status -in @('Running', 'Starting','Verifying')) { $script:activeJob = $true }
+        Update-FolderRows $record
+        if ($record.Status -in @('Running', 'Starting','Verifying','Pausing')) { $script:activeJob = $true }
     }
     $start.Enabled = -not $script:activeJob -and -not $script:gobUpdating
     Update-SelectedDownload
@@ -323,7 +382,7 @@ $start.Add_Click({
         $display = $nameBox.Text.Trim()
         if (-not $display) {
             $display = 'Dropbox download'
-            if ($kind -eq 'Folder') { $display = 'Shared folder ZIP' }
+            if ($kind -eq 'Folder') { $display = 'Dropbox folder' }
             $uri = $null
             if ($kind -eq 'File' -and [Uri]::TryCreate($linkBox.Text.Trim(), [UriKind]::Absolute, [ref]$uri)) {
                 $filename = [Uri]::UnescapeDataString($uri.Segments[-1])
@@ -336,6 +395,7 @@ $start.Add_Click({
             Created = [DateTime]::UtcNow.ToString('o')
             Name = $nameBox.Text.Trim()
             Destination = [IO.Path]::GetFullPath($directory.Text.Trim())
+            FolderMode = if ($kind -eq 'Folder') { 'files' } else { '' }
             FolderZip = $kind -eq 'Folder'
             AutoDetect = $true
             Subfolder = $subfolderOption.Checked
@@ -355,8 +415,8 @@ $start.Add_Click({
 $resume.Add_Click({
     try {
         $selected = Get-SelectedDownload
-        if (-not $selected -or $selected.Status -notin @('Failed', 'Interrupted', 'File found')) { return }
-        if ($selected.Status -ne 'File found' -and ($selected.Job.FolderZip -or $selected.Job.OnePass)) {
+        if (-not $selected -or $selected.Status -notin @('Paused', 'Failed', 'Interrupted', 'File found')) { return }
+        if ($selected.Status -ne 'File found' -and (($selected.Job.FolderZip -and $selected.Job.FolderMode -ne 'files') -or $selected.Job.OnePass)) {
             $choice = [Windows.Forms.MessageBox]::Show($form,
                 'This transfer uses one stream and must start from zero. Start it again?',
                 'Restart download', 'YesNo', 'Question', 'Button2')
@@ -382,6 +442,47 @@ $markDone.Add_Click({
         Update-DownloadHistory
     } catch { Show-UiError $_.Exception.Message }
 })
+$pause.Add_Click({
+    try {
+        $selected = Get-SelectedDownload
+        if (-not $selected.Attempt -or $selected.Status -notin @('Starting','Running','Verifying')) { return }
+        [IO.File]::WriteAllText($selected.Attempt.FullName + '.pause', [DateTime]::UtcNow.ToString('o'))
+        Update-DownloadHistory
+    } catch { Show-UiError $_.Exception.Message }
+})
+function Remove-SelectedDownload([bool]$DeleteFiles) {
+    Update-DownloadHistory
+    if ($script:activeJob -or $script:gobUpdating) { throw 'Pause the active download and wait for Paused before removing downloads.' }
+    $selected = Get-SelectedDownload
+    if (-not $selected) { return }
+    $files = @()
+    if ($DeleteFiles) { $files = @(Get-OwnedDownloadFiles $selected.Directory $selected.State) }
+    $message = if ($DeleteFiles) {
+        "Move $($files.Count) tracked file(s) for this download to Recycle Bin and remove it from History? Other files stay untouched. Empty Recycle Bin later to reclaim space."
+    } else { 'Remove this download (including all files in a folder job) from History? Downloaded files and saved progress stay on disk.' }
+    $choice = [Windows.Forms.MessageBox]::Show($form, $message, 'Remove download', 'YesNo', 'Question', 'Button2')
+    if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
+    if ($DeleteFiles) {
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        foreach ($file in $files) {
+            Assert-NoDownloadLinks $file
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file, 'AllDialogs', 'SendToRecycleBin', 'ThrowException')
+        }
+    }
+    $script:summaryPath = Get-HistoryLogPath $selected.Directory
+    Add-DownloadLog $(if ($DeleteFiles) { 'Removed from History. Tracked download files were moved to Recycle Bin.' } else {
+        'Removed from History. Downloaded files and saved progress were kept.' })
+    $archive = Join-Path $historyRoot 'Removed'
+    [void][IO.Directory]::CreateDirectory($archive)
+    $id = [IO.Path]::GetFileName($selected.Directory)
+    [IO.Directory]::Move($selected.Directory, (Join-Path $archive $id))
+    foreach ($childRow in $selected.ChildRows.Values) { $history.Items.Remove($childRow) }
+    $history.Items.Remove($selected.Row)
+    $script:jobs.Remove($id)
+    Update-DownloadHistory
+}
+$removeDownload.Add_Click({ try { Remove-SelectedDownload $false } catch { Show-UiError $_.Exception.Message } })
+$deleteDownload.Add_Click({ try { Remove-SelectedDownload $true } catch { Show-UiError $_.Exception.Message } })
 function Open-SelectedLog {
     $selected = Get-SelectedDownload
     if ($selected.State.SummaryPath -and [IO.File]::Exists($selected.State.SummaryPath)) {
@@ -402,9 +503,13 @@ $clearPartial.Add_Click({
         if (-not $selected.State.Output) { return }
         $folder = [IO.Path]::GetDirectoryName($selected.State.Output)
         $filename = [regex]::Escape([IO.Path]::GetFileName($selected.State.Output))
-        $files = @(Get-ChildItem -LiteralPath $folder -File | Where-Object {
-            $_.Name -match ('^' + $filename + '\.[0-9a-f]{16}\.part(?:\.aria2|\.resume\.json)?$')
-        })
+        $files = if ($selected.Job.FolderMode -eq 'files') {
+            @(Get-OwnedDownloadFiles $selected.Directory $selected.State | Where-Object { $_ -match '\.part(?:\.aria2|\.resume\.json)?$' } | ForEach-Object { Get-Item -LiteralPath $_ })
+        } else {
+            @(Get-ChildItem -LiteralPath $folder -File | Where-Object {
+                $_.Name -match ('^' + $filename + '\.[0-9a-f]{16}\.part(?:\.aria2|\.resume\.json)?$')
+            })
+        }
         if (-not $files.Count) { throw 'No saved partial files were found for this output name.' }
         $choice = [Windows.Forms.MessageBox]::Show($form,
             'Move the partial downloads for this output to Recycle Bin? Resume will start from zero.',
@@ -412,7 +517,7 @@ $clearPartial.Add_Click({
         if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
         Add-Type -AssemblyName Microsoft.VisualBasic
         foreach ($file in $files) {
-            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file.FullName, 'OnlyErrorDialogs', 'SendToRecycleBin')
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file.FullName, 'AllDialogs', 'SendToRecycleBin', 'ThrowException')
         }
         $detail.Text = 'Saved partials moved to Recycle Bin. Empty Recycle Bin to reclaim storage.'
     } catch { Show-UiError $_.Exception.Message }

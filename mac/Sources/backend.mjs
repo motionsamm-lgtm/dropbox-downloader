@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { constants, accessSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
-import { checkUpdate, downloadUpdate } from './updates.mjs';
+import { checkUpdate, downloadUpdate, currentVersion } from './updates.mjs';
 import { Downloader, DownloadError } from './engine.mjs';
 
 const [root, helper, downloads] = process.argv.slice(2);
@@ -18,7 +18,7 @@ const invoke = (binary, args) => new Promise((resolve, reject) => {
   child.on('close', code => code === 0 ? resolve() : reject(new Error('Command failed.')));
 });
 const app = new Downloader({
-  root, aria, emit: output, publish: (from, to) => invoke(helper, ['--publish', from, to])
+  root, aria, version: 'GOB ' + currentVersion, emit: output, publish: (from, to) => invoke(helper, ['--publish', from, to])
 });
 await app.load();
 output({ type: 'ready', downloads, available: Boolean(aria) });
@@ -49,7 +49,12 @@ async function handle(line) {
       output({type:'installUpdate',archive});
       return;
     }
-    if (msg.action === 'pause') { app.pause(); return; }
+    if (msg.action === 'pause') { app.pause(msg.id); return; }
+    if (msg.action === 'remove' || msg.action === 'deleteFiles') {
+      await app.remove(msg.id, { deleteFiles: msg.action === 'deleteFiles',
+        trash: file => invoke(helper, ['--trash', file]) });
+      return;
+    }
     if (msg.action === 'start' || msg.action === 'resume') {
       if (!aria) throw new DownloadError('Install aria2 with brew install aria2, then reopen this app.');
       if (msg.action === 'start') await app.start(msg);
@@ -67,7 +72,21 @@ async function handle(line) {
     }
     if (msg.action === 'clearPartials') {
       if (app.active) throw new DownloadError('Pause the download before clearing saved data.');
-      for (const file of await app.partialFiles(job)) await invoke(helper, ['--trash', file]);
+      const files = await app.partialFiles(job);
+      if (!files.length) throw new DownloadError('No saved partial files were found for this download.');
+      for (const file of files) await invoke(helper, ['--trash', file]);
+      if (job.kind === 'folder') {
+        const store = new Downloader({root:app.jobPath(job,'children')});
+        for (const child of await app.folderChildren(job)) {
+          if (child.status === 'Completed') continue;
+          delete child.ready; delete child.source; child.metrics=null; child.status='Paused';
+          await store.save(child);
+        }
+      }
+      if (job.status === 'Completed') {
+        await app.log(job, 'Old partial files moved to Trash. Verified completed files were kept.');
+        return;
+      }
       delete job.ready;
       delete job.source;
       job.metrics = null;

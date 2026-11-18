@@ -24,7 +24,7 @@ function Read-Component([string]$Name) {
     $text = [regex]::Replace($text, '(?m)\bexit ([01])\b', '$global:GobExitCode = $1; return')
     return $text
 }
-$common = @('Download-Reliability.ps1','Download-Log.ps1','Download-History.ps1','Download-Notifications.ps1')
+$common = @('Download-Reliability.ps1','Download-Log.ps1','Download-History.ps1','Download-Notifications.ps1','Download-Folder.ps1')
 $dependencyText = ($common | ForEach-Object { Read-Component $_ }) -join "`r`n"
 $worker = Read-Component 'Dropbox-Downloader.ps1'
 $worker = $worker -replace '^param\([^\r\n]*\)\r?\n', ''

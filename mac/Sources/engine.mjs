@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import {discoverFolder} from './dropbox-folder.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const MiB = 1024 ** 2;
@@ -41,9 +42,9 @@ export function parseLink(value) {
   const parts = u.pathname.split('/').filter(Boolean);
   const folderPath = shared && (
     (parts[0] === 'scl' && parts[1] === 'fo' && parts.length >= 4) ||
-    (parts[0] === 'sh' && parts.length === 3)
+    (parts[0] === 'sh' && parts.length >= 3)
   );
-  const nested = folderPath && parts[0] === 'scl' && parts.length > 4;
+  const nested = folderPath && (parts[0] === 'scl' ? parts.length > 4 : parts.length > 3);
   const folder = folderPath && !nested;
   if (!direct && !folderPath && !(shared && (
     (parts[0] === 'scl' && parts[1] === 'fi' && parts.length === 4) ||
@@ -142,6 +143,10 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
       redirect: 'manual', signal: timeout, headers: { Range: 'bytes=0-4095', 'Accept-Encoding': 'identity' }
     });
     const code = response.status;
+    if (code === 416 && response.headers.get('content-range')?.trim() === 'bytes */0') {
+      await response.body?.cancel();
+      return {total:0,count:0,prefix:hash(Buffer.alloc(0)),tag:''};
+    }
     if ([301, 302, 303, 307, 308].includes(code)) {
       const location = response.headers.get('location');
       await response.body?.cancel();
@@ -155,8 +160,10 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
       throw new DownloadError(`Dropbox returned HTTP ${code} while checking the link.`, code, wait);
     }
     if (code === 200 && !folder && !onePass) {
+      const zipResponse = /application\/(?:x-zip-compressed|zip)/i.test(response.headers.get('content-type') || '') ||
+        /filename[^\r\n]*\.zip(?:[";\s]|$)/i.test(response.headers.get('content-disposition') || '');
       await response.body?.cancel();
-      throw new DownloadError('Dropbox did not accept a byte-range request.', 200);
+      throw Object.assign(new DownloadError('Dropbox did not accept a byte-range request.', 200), {zipResponse});
     }
     if (response.headers.get('content-encoding') &&
         response.headers.get('content-encoding') !== 'identity') {
@@ -227,7 +234,7 @@ async function runProcess(binary, args, signal, onLine = () => {}) {
     child.once('error', e => reject(new DownloadError(`Could not start ${path.basename(binary)} (${e.code || 'process error'}).`)));
     child.once('close', (code, term) => {
       signal.removeEventListener('abort', stop);
-      if (signal.aborted) reject(signal.reason);
+      if (signal.aborted) resolve(code ?? 1);
       else if (term) reject(new DownloadError('The download process was interrupted.'));
       else resolve(code);
     });
@@ -249,8 +256,8 @@ const pauseText = 'Paused. Use Resume to continue.';
 const missingPair = 'A partial or its checkpoint is missing. The saved files were kept.';
 
 export class Downloader {
-  constructor({ root, aria, publish, emit, inspect = probe, execute = runProcess, sleep = delay }) {
-    Object.assign(this, { root, aria, publish, emit, inspect, execute, sleep });
+  constructor({ root, aria, publish, emit, inspect = probe, execute = runProcess, sleep = delay, discover = discoverFolder, version = 'GOB' }) {
+    Object.assign(this, { root, aria, publish, emit, inspect, execute, sleep, discover, version });
     this.jobs = new Map();
     this.active = null;
   }
@@ -262,7 +269,7 @@ export class Downloader {
       try {
         const job = JSON.parse(await fs.readFile(path.join(this.root, id, 'job.json'), 'utf8'));
         if (job.id !== id) continue;
-        if (['Checking', 'Downloading', 'Retrying', 'Verifying', 'Pausing'].includes(job.status)) {
+        if (['Listing', 'Checking', 'Downloading', 'Retrying', 'Verifying', 'Pausing'].includes(job.status)) {
           job.status = 'Interrupted';
           job.message = 'Interrupted. Resume checks the saved progress.';
           await this.save(job);
@@ -277,7 +284,7 @@ export class Downloader {
   jobPath(job, name) { return path.join(this.root, job.id, name); }
 
   send() {
-    const jobs = [...this.jobs.values()].sort((a, b) => b.created.localeCompare(a.created)).map(({ link, source, ready, ...view }) => ({ ...view, canFinish: Boolean(ready) }));
+    const jobs = [...this.jobs.values()].sort((a, b) => b.created.localeCompare(a.created)).map(({ link, source, ready, entries, directories, ...view }) => ({ ...view, canFinish: Boolean(ready) }));
     this.emit({ type: 'history', jobs, active: this.active?.id ?? null });
   }
 
@@ -289,6 +296,7 @@ export class Downloader {
   }
 
   async log(job, message) {
+    message = message.replace(/https?:\/\/\S+/g,'[Dropbox link]').replace(/'\/[^']*'/g,"'[local path omitted]'");
     try {
       await fs.appendFile(this.jobPath(job, 'download.log.txt'), `[${iso()}] ${message}\n`, { mode: 0o600 });
     } catch {
@@ -308,10 +316,10 @@ export class Downloader {
   async start(input) {
     if (this.active) throw new DownloadError('Pause or finish the current download first.');
     const link = parseLink(input.link);
-    let chosenName = input.name?.trim() || link.name;
+    let chosenName = input.name?.trim() || (link.folder ? 'Dropbox folder' : link.name);
     const sourceExtension = path.extname(link.name);
     if (!link.folder && !path.extname(chosenName) && sourceExtension) chosenName += sourceExtension;
-    const name = cleanName(chosenName, link.folder);
+    const name = cleanName(chosenName, false);
     if (typeof input.destination !== 'string' || !path.isAbsolute(input.destination)) {
       throw new DownloadError('Choose a save folder.');
     }
@@ -319,8 +327,9 @@ export class Downloader {
       throw new DownloadError('The save folder is unavailable. Choose another folder.');
     });
     const checksum = (input.checksum || '').trim().toLowerCase();
+    if (link.folder && checksum) throw new DownloadError('Expected SHA-256 applies to a single file. Leave it blank for a folder download.');
     if (checksum && !/^[a-f0-9]{64}$/.test(checksum)) throw new DownloadError('Enter a 64-character SHA-256.');
-    if (input.subfolder) {
+    if (input.subfolder && !link.folder) {
       destination = path.join(destination, path.parse(name).name);
       await fs.mkdir(destination).catch(e => { if (e.code !== 'EEXIST') throw e; });
     }
@@ -331,7 +340,7 @@ export class Downloader {
     if (activeTarget && !input.onePass) throw new DownloadError('This destination already has a History entry. Select it and use Resume.');
     const id = randomUUID();
     const job = {
-      id, name, destination, target, link: link.original, folder: link.folder,
+      id, name, destination, target, link: link.original, folder: link.folder, kind: link.folder ? 'folder' : 'file',
       onePass: !link.folder && Boolean(input.onePass), brutal: Boolean(input.brutal),
       notifications: Boolean(input.notifications), checksum, created: iso(), status: 'Queued',
       speedCap: Math.min(999, Math.max(0, Math.floor(Number(input.speedCap) || 0))),
@@ -349,21 +358,176 @@ export class Downloader {
     const active = { id: job.id, controller };
     this.active = active;
     this.send();
-    active.task = this.run(job, newLink, restart, controller.signal).catch(() => {
+    active.task = (job.kind === 'folder' ? this.runFolder(job, controller.signal) : this.run(job, newLink, restart, controller.signal)).catch(() => {
       job.status = 'Interrupted';
       job.message = 'Could not write download history. Saved transfer files were kept.';
     }).finally(() => { this.active = null; this.send(); });
   }
 
   async partialFiles(job) {
+    if (job.kind === 'folder') {
+      const children = await this.folderChildren(job);
+      return (await Promise.all(children.map(child => this.partialFiles(child)))).flat();
+    }
     const names = await fs.readdir(job.destination);
-    return names.filter(name => name === `.${job.id}.part` || name.startsWith(`.${job.id}.part.`) ||
-      name === `${job.name}.${job.id}.part` || name.startsWith(`${job.name}.${job.id}.part.`))
+    const recorded = job.partial && path.dirname(job.partial) === job.destination &&
+      path.basename(job.partial).endsWith(`.${job.id}.part`) ? path.basename(job.partial) : null;
+    return names.filter(original => {
+      const name = original.normalize('NFC');
+      return name === `.${job.id}.part` || name.startsWith(`.${job.id}.part.`) ||
+      (recorded && (name === recorded || name.startsWith(recorded + '.'))) ||
+      name === `${job.name}.${job.id}.part` || name.startsWith(`${job.name}.${job.id}.part.`);
+    })
       .map(name => path.join(job.destination, name));
   }
 
-  pause() {
+  pause(id = this.active?.id) {
+    if (this.active?.id !== id) throw new DownloadError('Select the active download to pause it.');
     this.active?.controller.abort(new DownloadError(pauseText));
+  }
+
+  async remove(id, { deleteFiles = false, trash } = {}) {
+    const job = this.jobs.get(id);
+    if (!job) throw new DownloadError('Select a download from History.');
+    if (this.active?.id === id) throw new DownloadError('Pause this download and wait for Paused before removing it.');
+    if (deleteFiles) {
+      if (typeof trash !== 'function') throw new DownloadError('Trash is unavailable. No files were removed.');
+      const children = job.kind === 'folder' ? await this.folderChildren(job) : [job];
+      const files = [];
+      for (const child of children) {
+        files.push(...await this.partialFiles(child));
+        const final = await fileInfo(child.target);
+        if (final && child.status === 'Completed') {
+          if (!this.matchesFinished(child, final)) {
+            throw new DownloadError('A finished file has changed. Check it in Finder before deleting it manually.');
+          }
+          files.push(child.target);
+        }
+      }
+      // Resolve every parent before moving anything. Never follow a replaced
+      // save-folder symlink or recursively remove a user's destination folder.
+      for (const file of files) {
+        const within = job.kind === 'folder' ? file.startsWith(job.target + path.sep) : path.dirname(file) === job.destination;
+        if (!within || (await fs.realpath(path.dirname(file))).normalize('NFC') !== path.dirname(file).normalize('NFC') ||
+            !(await fileInfo(file))?.isFile()) {
+          throw new DownloadError('A saved path changed. No deletion started; inspect the saved-data folder.');
+        }
+      }
+      for (const file of files) {
+        await trash(file);
+        await this.log(job, 'Moved a tracked download file to Trash.');
+      }
+    }
+    await this.log(job, deleteFiles ? 'Removed from History after moving tracked files to Trash.' :
+      'Removed from History. Download files and saved progress were kept.');
+    const archive = path.join(this.root, 'Removed');
+    await fs.mkdir(archive, { recursive: true, mode: 0o700 });
+    await fs.rename(this.jobPath(job, ''), path.join(archive, job.id));
+    this.jobs.delete(id);
+    this.send();
+  }
+
+  matchesFinished(job, info) {
+    return job.ready?.verified && info?.isFile() && info.size === job.ready.size &&
+      info.ino === job.ready.ino && info.dev === job.ready.dev && info.mtimeMs === job.ready.modified;
+  }
+
+  async folderChildren(job) {
+    const root = this.jobPath(job, 'children');
+    const children = [];
+    for (const entry of job.entries || []) {
+      if (!/^[a-f0-9-]{36}$/.test(entry.id)) throw new DownloadError('The saved folder manifest is damaged.');
+      const child = JSON.parse(await fs.readFile(path.join(root,entry.id,'job.json'),'utf8'));
+      if (typeof entry.local !== 'string' || entry.local.split('/').some(p=>!p||p==='.'||p==='..'||p.includes('\\')))
+        throw new DownloadError('The saved folder manifest contains an unsafe path.');
+      if (child.id !== entry.id || child.target !== path.join(job.target,...entry.local.split('/'))) throw new DownloadError('The saved folder paths changed. Files were kept.');
+      children.push(child);
+    }
+    return children;
+  }
+
+  async runFolder(job, signal) {
+    const started = Date.now();
+    await this.log(job, `--- Folder attempt started (${this.version}). Files download separately; ZIP mode is not used. ---`);
+    try {
+      if (!job.listed) {
+        await this.status(job,'Listing','Listing all folder pages and subfolders before starting files.');
+        const manifest = await this.discover(job.link,{signal,onProgress:progress=>{
+          job.message=progress.message;this.send();
+        }});
+        signal.throwIfAborted();
+        // Save the complete snapshot before creating any transfer. An interrupted
+        // listing is never confused with an empty or successfully finished folder.
+        job.entries = manifest.files.map(entry=>({...entry,id:randomUUID()}));
+        job.directories = manifest.directories;
+        const worker = new Downloader({root:this.jobPath(job,'children'),aria:this.aria,publish:this.publish,emit:()=>{}});
+        await fs.mkdir(worker.root,{recursive:true,mode:0o700});
+        for (const entry of job.entries) {
+          const target=path.join(job.target,...entry.local.split('/'));
+          const child={id:entry.id,name:path.basename(target),destination:path.dirname(target),target,
+            link:entry.url,folder:false,kind:'file',onePass:false,brutal:job.brutal,
+            notifications:false,checksum:'',created:job.created,status:'Queued',connections:job.connections,
+            speedCap:job.speedCap,folderBudget:job.brutal?Math.floor(16/Math.max(1,Math.min(3,manifest.files.length))):job.connections,expectedSize:entry.size};
+          await fs.mkdir(worker.jobPath(child,''),{recursive:true,mode:0o700});
+          await worker.save(child);
+        }
+        job.listed = true;
+        await this.save(job);
+        await this.log(job, `Full listing saved: ${job.entries.length} files, ${manifest.directories.length} subfolders.`);
+      }
+      const children=await this.folderChildren(job);
+      const ensureDirectory = async dir => {
+        await fs.mkdir(dir,{recursive:true});
+        if ((await fs.realpath(dir)).normalize('NFC') !== dir.normalize('NFC') || !(await fileInfo(dir))?.isDirectory()) throw new DownloadError('A folder destination contains a substituted link. Files were kept.');
+      };
+      await ensureDirectory(job.target);
+      for(const dir of job.directories||[]) await ensureDirectory(path.join(job.target,...dir.local.split('/')));
+      for(const child of children) await ensureDirectory(child.destination);
+      let parallelLimit = job.brutal ? 3 : 1;
+      const update = () => {
+        if (children.some(child=>child.recovery)) parallelLimit = 1;
+        job.children = children.slice(0,500).map((child,index)=>({id:child.id,name:job.entries[index].remote,status:child.status,metrics:child.metrics}));
+        job.completedFiles=children.filter(child=>child.status==='Completed').length;
+        job.fileCount=children.length;
+        job.metrics={total:job.entries.reduce((sum,e)=>sum+e.size,0),done:children.reduce((sum,child,index)=>sum+(child.status==='Completed'?job.entries[index].size:Math.min(job.entries[index].size,child.metrics?.done||0)),0),
+          speed:children.reduce((sum,child)=>sum+(child.status==='Downloading'?child.metrics?.speed||0:0),0),connections:children.reduce((sum,child)=>sum+(child.status==='Downloading'?child.metrics?.connections||0:0),0)};
+        this.send();
+      };
+      for(const child of children) {
+        if(child.status==='Completed'&&!this.matchesFinished(child,await fileInfo(child.target))) throw new DownloadError('A completed folder file changed or is missing. Check the saved folder before resuming.');
+      }
+      await this.status(job,'Downloading','Downloading folder files separately.');
+      if(job.notifications)this.emit({type:'notification',title:'Folder download started',body:job.name});
+      let cursor=0;
+      const worker = async workerIndex => {
+        while(cursor<children.length&&!signal.aborted&&workerIndex<parallelLimit) {
+          const index=cursor++,child=children[index];
+          if(child.status==='Completed') {update();continue;}
+          if(parallelLimit===1&&job.brutal) {child.brutal=false;child.folderBudget=1;}
+          const app = new Downloader({root:this.jobPath(job,'children'),aria:this.aria,publish:this.publish,emit:update,inspect:this.inspect,execute:this.execute,sleep:this.sleep});
+          app.jobs.set(child.id,child);
+          app.log=(_child,message)=>this.log(job,`File ${index+1}/${children.length}: ${message}`);
+          await app.run(child,null,false,signal);
+          update();
+        }
+      };
+      update();
+      const results = await Promise.allSettled(Array.from({length:job.brutal?3:1},(_,index)=>worker(index)));
+      const rejected = results.find(result=>result.status==='rejected');
+      if(rejected) throw rejected.reason;
+      update();
+      const status=signal.aborted?'Paused':children.every(child=>child.status==='Completed')?'Completed':'Failed';
+      const message=status==='Completed'?`Completed. ${children.length} files saved and verified.`:
+        status==='Paused'?`Paused. ${job.completedFiles}/${children.length} files completed; Resume keeps them.`:
+        `${job.completedFiles}/${children.length} files completed. Resume retries unfinished files.`;
+      await this.status(job,status,message);
+      await this.log(job,`Result: ${message}`);
+      if(job.notifications&&status!=='Paused')this.emit({type:'notification',title:status==='Completed'?'Folder download completed':'Folder needs attention',body:message});
+    } catch(e) {
+      const message=signal.aborted?pauseText:e.message||'The folder could not finish. Saved files were kept.';
+      await this.log(job,'Result: '+message);
+      await this.status(job,signal.aborted?'Paused':'Failed',message);
+    } finally {await this.log(job,`Folder attempt ended. Elapsed: ${Math.round((Date.now()-started)/1000)}s.`);}
   }
 
   async inspectWithRetry(job, link, signal, fallback = true) {
@@ -375,6 +539,7 @@ export class Downloader {
         } catch (e) {
           signal.throwIfAborted();
           last = e;
+          if (e.zipResponse && job.expectedSize === undefined && /^https:\/\/(?:www\.)?dropbox\.com\/(?:scl\/fo|sh)\//.test(link.original)) throw e;
           if (!(e instanceof DownloadError)) last = new DownloadError('The network timed out or could not reach Dropbox.', 503);
           if (attempt === 2 || !httpRetry.has(last.http) || [403, 410].includes(last.http) || last.wait > 120) break;
           const seconds = Math.max(last.wait, last.http === 429 ? 30 : 5);
@@ -391,7 +556,8 @@ export class Downloader {
     const started = Date.now();
     let streamOnly = job.folder || job.onePass;
     const legacy = path.join(job.destination, `.${job.id}.part`);
-    const partial = job.partial || ((await fileInfo(legacy)) ? legacy : path.join(job.destination, `${job.name}.${job.id}.part`));
+    const visibleName = job.name.startsWith('.') ? 'GOB' + job.name : job.name;
+    const partial = job.partial || ((await fileInfo(legacy)) ? legacy : path.join(job.destination, `${visibleName}.${job.id}.part`));
     job.partial = partial;
     const control = partial + '.aria2';
     const pair = async () => {
@@ -406,7 +572,7 @@ export class Downloader {
     };
     job.metrics = null;
     job.recovery = false;
-    await this.log(job, '--- Attempt started ---');
+    await this.log(job, `--- Attempt started (${this.version}) ---`);
     try {
       await this.status(job, 'Checking', 'Checking the link and saved progress.');
       if (job.notifications) this.emit({ type: 'notification', title: 'Download started', body: job.name });
@@ -431,12 +597,18 @@ export class Downloader {
       try { checked = await this.inspectWithRetry(job, link, signal); }
       catch (error) {
         if (error.http !== 200 || resumed || streamOnly) throw error;
+        if (error.zipResponse && job.expectedSize === undefined && /^https:\/\/(?:www\.)?dropbox\.com\/(?:scl\/fo|sh)\//.test(link.original)) {
+          throw new DownloadError('Dropbox returned a folder ZIP. Paste the whole folder’s share link so GOB can list and download its files separately.');
+        }
         job.onePass = true;
         streamOnly = true;
         await this.log(job, 'Dropbox ignored ranges. Automatically using one stream for this new download.');
         checked = await this.inspectWithRetry(job, link, signal);
       }
       const { sample, url } = checked;
+      if (job.expectedSize !== undefined && sample.total !== job.expectedSize) {
+        throw new DownloadError('This file changed size after the folder was listed. Saved files were kept; download the changed folder under a new name.');
+      }
       if (resumed) {
         assertSameSource(job.source, sample);
         const savedProgress = await readCheckpoint(control);
@@ -452,7 +624,7 @@ export class Downloader {
       await this.save(job);
       await this.log(job, `Source checked. Size: ${sample.total || 'unknown'} bytes. Mode: ${streamOnly ? 'single stream' : 'resumable'}.`);
 
-      let connections = streamOnly ? 1 : job.brutal ? 16 : job.connections;
+      let connections = streamOnly ? 1 : job.folderBudget || (job.brutal ? 16 : job.connections);
       let brutal = job.brutal;
       let transferURL = url;
       for (let attempt = 1; attempt <= 6; attempt++) {
@@ -503,6 +675,7 @@ export class Downloader {
           await this.finish(job, partial, signal);
           return;
         }
+        signal.throwIfAborted();
         if (streamOnly || attempt === 6 || !retryCodes.has(code)) {
           throw new DownloadError(code === 9 ? 'The save volume ran out of space. Free space before resuming.'
             : `The transfer could not finish (aria2 ${code}${lastHttp ? `, HTTP ${lastHttp}` : ''}). Saved files were kept.`);
@@ -535,6 +708,7 @@ export class Downloader {
   }
 
   async finish(job, partial, signal) {
+    signal.throwIfAborted();
     await this.status(job, 'Verifying', 'Checking the saved file.');
     const matchesReady = info => info?.isFile() && info.size === job.ready.size &&
       info.ino === job.ready.ino && info.dev === job.ready.dev && info.mtimeMs === job.ready.modified;
