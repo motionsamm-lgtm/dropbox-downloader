@@ -13,7 +13,7 @@ trap {
 $form = New-Object Windows.Forms.Form
 $form.Text = 'GOB — Grab Our Bytes'
 $form.Icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'GOB.ico'))
-$form.ClientSize = [Drawing.Size]::new(660, 790)
+$form.ClientSize = [Drawing.Size]::new(660, 830)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
@@ -119,6 +119,9 @@ $resume.Enabled = $false
 $openLog.Enabled = $false
 $markDone = Add-Control Button 'Mark complete' 325 705 125 30
 $markDone.Enabled = $false
+$pause = Add-Control Button 'Pause download' 458 705 176 30
+$removeDownload = Add-Control Button 'Remove from list...' 27 785 150 30
+$deleteDownload = Add-Control Button 'Delete files...' 187 785 130 30
 $script:jobs = @{}
 $script:activeJob = $false
 $historyRoot = Get-HistoryDirectory
@@ -137,6 +140,9 @@ function Update-SelectedDownload {
     $resume.Enabled = $false
     $openLog.Enabled = $false
     $markDone.Enabled = $false
+    $pause.Enabled = $false
+    $removeDownload.Enabled = $false
+    $deleteDownload.Enabled = $false
     if (-not $selected) {
         $progress.Style = 'Continuous'
         $progress.Value = 0
@@ -146,7 +152,11 @@ function Update-SelectedDownload {
 
     $state = $selected.State
     $stage = $selected.Status
-    $resume.Enabled = (-not $script:gobUpdating -and -not $script:activeJob -and $stage -in @('Failed','Interrupted','File found'))
+    $resume.Enabled = (-not $script:gobUpdating -and -not $script:activeJob -and $stage -in @('Paused','Failed','Interrupted','File found'))
+    $pause.Enabled = $stage -in @('Starting','Running','Verifying')
+    $pause.Text = if ($stage -eq 'Pausing') { 'Saving progress...' } else { 'Pause download' }
+    $removeDownload.Enabled = -not $script:activeJob -and -not $script:gobUpdating
+    $deleteDownload.Enabled = -not $script:activeJob -and -not $script:gobUpdating
     $openLog.Enabled = $state.SummaryPath -and [IO.File]::Exists($state.SummaryPath)
     $markDone.Enabled = -not $script:activeJob -and $stage -eq 'File found'
     $metrics = $selected.Metrics
@@ -202,6 +212,12 @@ function Update-DownloadHistory {
         if ($last) { $record.State = Read-HistoryState $last.FullName }
         $record.Attempt = $last
         $record.Status = Get-HistoryStatus $record.State
+        $workerAlive = (Test-HistoryProcess $record.State.ProcessId $record.State.ProcessStart) -or
+            (Test-HistoryProcess $record.State.EngineId $record.State.EngineStart)
+        if ($last -and [IO.File]::Exists($last.FullName + '.pause') -and
+            $record.Status -in @('Starting','Running','Pausing')) {
+            $record.Status = if ($workerAlive) { 'Pausing' } else { 'Interrupted' }
+        }
         $record.RecordedFinished = $null
         if ($record.Status -in @('Failed','Interrupted') -and $record.State.Output -and
             [IO.File]::Exists([string]$record.State.Output)) {
@@ -258,7 +274,7 @@ function Update-DownloadHistory {
         $record.Row.SubItems[2].Text = $progressText
         $record.Row.SubItems[3].Text = $speedText
         $record.Row.SubItems[4].Text = $etaText
-        if ($record.Status -in @('Running', 'Starting','Verifying')) { $script:activeJob = $true }
+        if ($record.Status -in @('Running', 'Starting','Verifying','Pausing')) { $script:activeJob = $true }
     }
     $start.Enabled = -not $script:activeJob -and -not $script:gobUpdating
     Update-SelectedDownload
@@ -355,7 +371,7 @@ $start.Add_Click({
 $resume.Add_Click({
     try {
         $selected = Get-SelectedDownload
-        if (-not $selected -or $selected.Status -notin @('Failed', 'Interrupted', 'File found')) { return }
+        if (-not $selected -or $selected.Status -notin @('Paused', 'Failed', 'Interrupted', 'File found')) { return }
         if ($selected.Status -ne 'File found' -and ($selected.Job.FolderZip -or $selected.Job.OnePass)) {
             $choice = [Windows.Forms.MessageBox]::Show($form,
                 'This transfer uses one stream and must start from zero. Start it again?',
@@ -382,6 +398,46 @@ $markDone.Add_Click({
         Update-DownloadHistory
     } catch { Show-UiError $_.Exception.Message }
 })
+$pause.Add_Click({
+    try {
+        $selected = Get-SelectedDownload
+        if (-not $selected.Attempt -or $selected.Status -notin @('Starting','Running','Verifying')) { return }
+        [IO.File]::WriteAllText($selected.Attempt.FullName + '.pause', [DateTime]::UtcNow.ToString('o'))
+        Update-DownloadHistory
+    } catch { Show-UiError $_.Exception.Message }
+})
+function Remove-SelectedDownload([bool]$DeleteFiles) {
+    Update-DownloadHistory
+    if ($script:activeJob -or $script:gobUpdating) { throw 'Pause the active download and wait for Paused before removing downloads.' }
+    $selected = Get-SelectedDownload
+    if (-not $selected) { return }
+    $files = @()
+    if ($DeleteFiles) { $files = @(Get-OwnedDownloadFiles $selected.Directory $selected.State) }
+    $message = if ($DeleteFiles) {
+        "Move $($files.Count) tracked file(s) for this download to Recycle Bin and remove it from History? Other files stay untouched. Empty Recycle Bin later to reclaim space."
+    } else { 'Remove this download from History? Its downloaded files and saved progress stay on disk.' }
+    $choice = [Windows.Forms.MessageBox]::Show($form, $message, 'Remove download', 'YesNo', 'Question', 'Button2')
+    if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
+    if ($DeleteFiles) {
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        foreach ($file in $files) {
+            Assert-NoDownloadLinks $file
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($file, 'OnlyErrorDialogs', 'SendToRecycleBin')
+        }
+    }
+    Start-DownloadLog (Get-HistoryLogPath $selected.Directory)
+    Add-DownloadLog $(if ($DeleteFiles) { 'Removed from History. Tracked download files were moved to Recycle Bin.' } else {
+        'Removed from History. Downloaded files and saved progress were kept.' })
+    $archive = Join-Path $historyRoot 'Removed'
+    [void][IO.Directory]::CreateDirectory($archive)
+    $id = [IO.Path]::GetFileName($selected.Directory)
+    [IO.Directory]::Move($selected.Directory, (Join-Path $archive $id))
+    $history.Items.Remove($selected.Row)
+    $script:jobs.Remove($id)
+    Update-DownloadHistory
+}
+$removeDownload.Add_Click({ try { Remove-SelectedDownload $false } catch { Show-UiError $_.Exception.Message } })
+$deleteDownload.Add_Click({ try { Remove-SelectedDownload $true } catch { Show-UiError $_.Exception.Message } })
 function Open-SelectedLog {
     $selected = Get-SelectedDownload
     if ($selected.State.SummaryPath -and [IO.File]::Exists($selected.State.SummaryPath)) {

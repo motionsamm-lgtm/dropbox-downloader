@@ -137,7 +137,7 @@ function Get-FileProbeWithRetry([string]$Curl, [string]$Url, [bool]$VerifyMp4) {
         Add-ProbeLog $probe.Problem
         Add-DownloadLog "Waiting $($probe.RetryDelay) seconds before checking the link again."
         Write-Host ("{0} Checking again in {1}s." -f $probe.Problem, $probe.RetryDelay) -ForegroundColor Yellow
-        Start-Sleep -Seconds $probe.RetryDelay
+        Wait-DownloadRetry $probe.RetryDelay
     }
 }
 
@@ -207,6 +207,7 @@ try {
         Start-DownloadLog (Get-HistoryLogPath $jobDirectory)
         $script:historyState.SummaryPath = $script:summaryPath
         Update-HistoryState 'Running' 'Opening the saved download settings.'
+        Assert-DownloadActive
     }
     $aria = Join-Path $PSScriptRoot 'aria2c.exe'
     if (-not [IO.File]::Exists($aria)) {
@@ -426,6 +427,7 @@ try {
         }
         $partial = Join-Path $destination $partialName
         $control = "$partial.aria2"
+        foreach ($owned in @($partial, $control, ($partial + '.resume.json'))) { Add-OwnedDownloadFile $owned }
         if ($HistoryAttempt) { $script:historyState.Checkpoint = $control }
         $priorFinished = [IO.File]::Exists($partial) -and -not [IO.File]::Exists($control) -and
             ($size -le 0 -or (Get-Item -LiteralPath $partial).Length -eq $size) -and
@@ -487,6 +489,7 @@ try {
         $completeCheckpoint = Test-CompleteCheckpoint $control $size
         if ($completeCheckpoint -or $priorFinished) { Add-DownloadLog 'Saved transfer records show all bytes arrived. Verifying the file locally.' }
         for ($attempt = 0; -not $completeCheckpoint -and -not $priorFinished -and $attempt -lt 6; $attempt++) {
+            Assert-DownloadActive
             $reportedSuccess = $false
             $maxTries = if ($streamOnly) { 1 } elseif ($brutalActive) { 4 } else { 12 }
             $transferOptions = $options + @(
@@ -564,7 +567,7 @@ try {
                 "Waiting ${delay}s before retrying with up to $currentConnections connection(s)."
             }
             Update-HistoryState 'Running' $retryMessage
-            Start-Sleep -Seconds $delay
+            Wait-DownloadRetry $delay
             $freshProbe = Get-FileProbeWithRetry $curl $url $verifyMp4
             if ($freshProbe.Problem) {
                 Add-ProbeLog $freshProbe.Problem
@@ -598,6 +601,13 @@ try {
     }
 } catch {
     $failure = $_.Exception.Message
+    if (Test-DownloadPause) {
+        $message = 'Paused by you. Saved progress was kept. Resume continues where the server supports it.'
+        Add-DownloadLog $message
+        Finish-DownloadLog $message
+        Update-HistoryState 'Paused' $message
+        exit 0
+    }
     $safeReason = switch -Regex ($failure) {
         'SHA-256 mismatch' { 'The checksum did not match. The file was kept as a partial.'; break }
         'Windows could not rename' { 'Windows blocked the final rename. The completed partial was kept for a local retry.'; break }

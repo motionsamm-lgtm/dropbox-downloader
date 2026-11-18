@@ -46,6 +46,76 @@ const success = async (_bin, args) => {
   return 0;
 };
 
+test('remove archives history but keeps download bytes and checkpoints across reload', async t => {
+  const f = await fixture(t, { execute: success });
+  await f.app.start({link, destination:f.destination, brutal:true});
+  await f.app.active.task;
+  const job = f.job();
+  assert.equal(job.status, 'Completed');
+  await f.app.remove(job.id);
+  assert.deepEqual(await fs.readFile(job.target), file);
+  assert.equal(f.app.jobs.size, 0);
+  await f.app.load();
+  assert.equal(f.app.jobs.size, 0);
+  assert.ok(await fs.stat(path.join(f.app.root, 'Removed', job.id, 'job.json')));
+});
+
+test('delete trashes only owned files, keeps unrelated files, and refuses changed final files', async t => {
+  const f = await fixture(t, {execute:success});
+  await f.app.start({link, destination:f.destination});
+  await f.app.active.task;
+  const job = f.job(), unrelated = path.join(f.destination, 'client-project.prproj');
+  await fs.writeFile(unrelated, 'keep');
+  const moved = [];
+  const trash = async p => { moved.push(p); await fs.rename(p, p+'.trashed'); };
+  await f.app.remove(job.id, {deleteFiles:true, trash});
+  assert.deepEqual(moved, [job.target]);
+  assert.equal(await fs.readFile(unrelated,'utf8'), 'keep');
+  const g = await fixture(t, {execute:success});
+  await g.app.start({link, destination:g.destination});
+  await g.app.active.task;
+  const modified = g.job();
+  await fs.writeFile(modified.target, 'replaced');
+  await assert.rejects(g.app.remove(modified.id, {deleteFiles:true, trash}), /changed/);
+  assert.ok(g.app.jobs.has(modified.id));
+});
+
+test('active jobs cannot be removed; pause saves state and Resume finishes the same job', async t => {
+  let began;
+  const started = new Promise(resolve => { began = resolve; });
+  const f = await fixture(t, {execute: async (_bin,args,signal) => {
+    await fs.writeFile(working(args), file);
+    await fs.writeFile(working(args)+'.aria2', control(false));
+    began();
+    await new Promise((resolve,reject) => signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
+  }});
+  await f.app.start({link, destination:f.destination});
+  await started;
+  const job = f.job();
+  await assert.rejects(f.app.remove(job.id), /Pause/);
+  f.app.pause(job.id);
+  await f.app.active.task;
+  assert.equal(job.status, 'Paused');
+  assert.ok(await fs.stat(job.partial+'.aria2'));
+  f.app.execute = success;
+  f.app.launch(job);
+  await f.app.active.task;
+  assert.equal(job.status, 'Completed');
+});
+
+test('delete refuses a substituted save-folder symlink before moving any file', async t => {
+  const f = await fixture(t, {execute:success});
+  await f.app.start({link, destination:f.destination});
+  await f.app.active.task;
+  const job = f.job();
+  const movedFolder = f.destination+'-moved';
+  await fs.rename(f.destination, movedFolder);
+  await fs.symlink(movedFolder, f.destination);
+  let calls=0;
+  await assert.rejects(f.app.remove(job.id,{deleteFiles:true,trash:async()=>{calls++;}}), /path changed/);
+  assert.equal(calls,0);
+});
+
 test('classifies links and separates session tokens from file identity', () => {
   assert.equal(parseLink(link).key, parseLink(link.replace('st=old', 'st=new')).key);
   assert.equal(parseLink(link).name, 'test.mp4');

@@ -362,8 +362,47 @@ export class Downloader {
       .map(name => path.join(job.destination, name));
   }
 
-  pause() {
+  pause(id = this.active?.id) {
+    if (this.active?.id !== id) throw new DownloadError('Select the active download to pause it.');
     this.active?.controller.abort(new DownloadError(pauseText));
+  }
+
+  async remove(id, { deleteFiles = false, trash } = {}) {
+    const job = this.jobs.get(id);
+    if (!job) throw new DownloadError('Select a download from History.');
+    if (this.active?.id === id) throw new DownloadError('Pause this download and wait for Paused before removing it.');
+    if (deleteFiles) {
+      if (typeof trash !== 'function') throw new DownloadError('Trash is unavailable. No files were removed.');
+      const files = await this.partialFiles(job);
+      const final = await fileInfo(job.target);
+      if (final && job.status === 'Completed') {
+        if (!job.ready?.verified || !final.isFile() || final.size !== job.ready.size ||
+            final.ino !== job.ready.ino || final.dev !== job.ready.dev || final.mtimeMs !== job.ready.modified) {
+          throw new DownloadError('The finished file has changed. Check it in Finder before deleting it manually.');
+        }
+        files.push(job.target);
+      }
+      // Resolve every parent before moving anything. Never follow a replaced
+      // save-folder symlink or recursively remove a user's destination folder.
+      for (const file of files) {
+        if (path.dirname(file) !== job.destination ||
+            await fs.realpath(path.dirname(file)) !== job.destination ||
+            !(await fileInfo(file))?.isFile()) {
+          throw new DownloadError('A saved path changed. No deletion started; inspect the saved-data folder.');
+        }
+      }
+      for (const file of files) {
+        await trash(file);
+        await this.log(job, 'Moved a tracked download file to Trash.');
+      }
+    }
+    await this.log(job, deleteFiles ? 'Removed from History after moving tracked files to Trash.' :
+      'Removed from History. Download files and saved progress were kept.');
+    const archive = path.join(this.root, 'Removed');
+    await fs.mkdir(archive, { recursive: true, mode: 0o700 });
+    await fs.rename(this.jobPath(job, ''), path.join(archive, job.id));
+    this.jobs.delete(id);
+    this.send();
   }
 
   async inspectWithRetry(job, link, signal, fallback = true) {

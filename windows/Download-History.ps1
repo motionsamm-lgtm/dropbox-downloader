@@ -53,6 +53,68 @@ function Get-HistoryStatus($State) {
     return 'Interrupted'
 }
 
+function Test-DownloadPause {
+    return ($script:historyAttemptPath -and [IO.File]::Exists($script:historyAttemptPath + '.pause'))
+}
+
+function Assert-DownloadActive {
+    if (Test-DownloadPause) { throw [OperationCanceledException]::new('Download paused by you. Saved progress was kept.') }
+}
+
+function Wait-DownloadRetry([int]$Seconds) {
+    $until = [DateTime]::UtcNow.AddSeconds($Seconds)
+    do {
+        Assert-DownloadActive
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $until)
+}
+
+function Add-OwnedDownloadFile([string]$Path) {
+    if (-not $script:historyAttemptPath) { return }
+    $record = @{ Path = [IO.Path]::GetFullPath($Path) }
+    $ledger = Join-Path ([IO.Path]::GetDirectoryName($script:historyAttemptPath)) 'owned-files.jsonl'
+    $record | ConvertTo-Json -Compress | Add-Content -LiteralPath $ledger -Encoding UTF8
+}
+
+function Assert-NoDownloadLinks([string]$Path) {
+    $current = [IO.Path]::GetFullPath($Path)
+    while ($current) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'A saved path contains a link or junction. Inspect it before deleting files manually.'
+            }
+        }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if ($parent -eq $current) { break }
+        $current = $parent
+    }
+}
+
+function Get-OwnedDownloadFiles([string]$Directory, $State) {
+    $files = @()
+    $ledger = Join-Path $Directory 'owned-files.jsonl'
+    if ([IO.File]::Exists($ledger)) {
+        foreach ($line in Get-Content -LiteralPath $ledger -Encoding UTF8) {
+            try { $files += [string](ConvertFrom-Json -InputObject $line -ErrorAction Stop).Path }
+            catch { throw 'The saved-file list is damaged. No deletion started; inspect the saved-data folder.' }
+        }
+    }
+    # Exact paths from older releases; never a destination-folder wildcard.
+    if ($State.Checkpoint -and ([string]$State.Checkpoint).EndsWith('.part.aria2')) {
+        $partial = ([string]$State.Checkpoint).Substring(0, ([string]$State.Checkpoint).Length - 6)
+        $files += @($partial, [string]$State.Checkpoint, ($partial + '.resume.json'))
+    }
+    if ($State.Output -and $State.Status -eq 'Completed') { $files += [string]$State.Output }
+    $result = @()
+    foreach ($file in ($files | Where-Object { $_ } | Select-Object -Unique)) {
+        Assert-NoDownloadLinks $file
+        if ([IO.Directory]::Exists($file)) { throw 'A tracked file became a folder. No deletion started.' }
+        if ([IO.File]::Exists($file)) { $result += $file }
+    }
+    return $result
+}
+
 function Invoke-TransferRpc($State, [string]$Method, [object[]]$Arguments) {
     if (-not $State.Port -or -not $State.Token) { return }
     try {
@@ -206,6 +268,16 @@ function Find-TransferReadout([string]$Text) {
 }
 
 function Invoke-RecordedTransfer([string]$Executable, [string[]]$Arguments) {
+    Assert-DownloadActive
+    # Private loopback RPC permits a graceful shutdown: aria2 saves its control
+    # file before the worker acknowledges Paused. It is never network exposed.
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $port = $listener.LocalEndpoint.Port
+    $listener.Stop()
+    $token = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+    $Arguments += @('--enable-rpc=true', '--rpc-listen-all=false', '--rpc-allow-origin-all=false',
+        "--rpc-listen-port=$port", "--rpc-secret=$token")
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $Executable
     $start.Arguments = ($Arguments | ForEach-Object { Quote-TransferArgument $_ }) -join ' '
@@ -224,6 +296,10 @@ function Invoke-RecordedTransfer([string]$Executable, [string[]]$Arguments) {
     $reportedSuccess = $false
     $sawResultsTable = $false
     $record = @{ State = $script:historyState }
+    $pauseClock = $null
+    $lastShutdown = -5000
+    $terminalCode = $null
+    $lastRpc = -1000
     try {
         if (-not $engine.HasExited) {
             $script:historyState.EngineId = $engine.Id
@@ -232,6 +308,34 @@ function Invoke-RecordedTransfer([string]$Executable, [string[]]$Arguments) {
         }
         $read = $engine.StandardOutput.ReadAsync($buffer, 0, $buffer.Length)
         while ($true) {
+            if ($clock.ElapsedMilliseconds - $lastRpc -ge 1000 -and -not $engine.HasExited) {
+                $lastRpc = $clock.ElapsedMilliseconds
+                $stats = Invoke-TransferRpc @{Port=$port;Token=$token} 'aria2.getGlobalStat' @()
+                if ($stats -and [int]$stats.numStopped -gt 0 -and [int]$stats.numActive -eq 0 -and [int]$stats.numWaiting -eq 0) {
+                    $stopped = @(Invoke-TransferRpc @{Port=$port;Token=$token} 'aria2.tellStopped' @(0, 10))
+                    if ($stopped.Count -eq 1 -and $stopped[0].status -in @('complete','error','removed')) {
+                        $terminalCode = if ($stopped[0].status -eq 'complete') { 0 } elseif ($stopped[0].errorCode) { [int]$stopped[0].errorCode } else { 1 }
+                        $reportedSuccess = $stopped[0].status -eq 'complete'
+                        $null = Invoke-TransferRpc @{Port=$port;Token=$token} 'aria2.shutdown' @()
+                    }
+                }
+            }
+            if (Test-DownloadPause) {
+                if (-not $pauseClock) {
+                    $pauseClock = [Diagnostics.Stopwatch]::StartNew()
+                    Update-HistoryState 'Pausing' 'Pausing. Waiting for the engine to save its checkpoint.' $port $token
+                    Add-DownloadLog 'Pause requested. Stopping the engine and saving progress; automatic retries are cancelled.'
+                }
+                if ($pauseClock.ElapsedMilliseconds - $lastShutdown -ge 1000 -and -not $engine.HasExited) {
+                    $method = if ($pauseClock.Elapsed.TotalSeconds -ge 15) { 'aria2.forceShutdown' } else { 'aria2.shutdown' }
+                    $null = Invoke-TransferRpc @{Port=$port;Token=$token} $method @()
+                    $lastShutdown = $pauseClock.ElapsedMilliseconds
+                }
+                if ($pauseClock.Elapsed.TotalSeconds -ge 30 -and -not $engine.HasExited) {
+                    Add-DownloadLog 'The engine did not stop within 30 seconds. Stopped it; Resume will check the last saved checkpoint.'
+                    $engine.Kill()
+                }
+            }
             if ($read -and $read.Wait(250)) {
                 $count = $read.Result
                 if ($count -eq 0) {
@@ -265,7 +369,7 @@ function Invoke-RecordedTransfer([string]$Executable, [string[]]$Arguments) {
                 if (-not $metrics -and $latest -and $elapsed - $latest.Seen -le 5000) { $metrics = $latest }
             }
             $script:historyState.Metrics = $metrics
-            Update-HistoryState 'Running' $script:historyState.Message
+            if (-not $pauseClock) { Update-HistoryState 'Running' $script:historyState.Message }
             if ($metrics -and $metrics.Total -gt 0) {
                 $percent = [int][Math]::Floor(100 * $metrics.Completed / [double]$metrics.Total)
                 if ($null -ne $metrics.Connections -and $metrics.Connections -ne $lastConnections) {
@@ -283,12 +387,14 @@ function Invoke-RecordedTransfer([string]$Executable, [string[]]$Arguments) {
                 $lastNote = $elapsed
             }
         }
-        Add-DownloadLog ("Transfer attempt ended after {0:hh\:mm\:ss}. Engine exit code: {1}." -f $clock.Elapsed,$engine.ExitCode)
-        if ($engine.ExitCode -eq 0) {
+        Assert-DownloadActive
+        $exitCode = if ($null -ne $terminalCode) { $terminalCode } else { $engine.ExitCode }
+        Add-DownloadLog ("Transfer attempt ended after {0:hh\:mm\:ss}. Engine exit code: {1}." -f $clock.Elapsed,$exitCode)
+        if ($exitCode -eq 0) {
             $script:historyState.EngineFinished = $true
             Update-HistoryState 'Running' 'All bytes received. Checking the saved file.'
         }
-        return @{ExitCode=$engine.ExitCode; ReportedSuccess=$reportedSuccess}
+        return @{ExitCode=$exitCode; ReportedSuccess=$reportedSuccess}
     } finally {
         $engine.Dispose()
         $script:historyState.EngineId = 0

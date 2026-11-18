@@ -76,6 +76,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
         <button type="button" id="pause" hidden>Pause</button><button type="button" id="resume" hidden>Resume</button>
         <button type="button" id="refresh" hidden>Update link</button><button type="button" id="reveal" hidden>Show in Finder</button>
         <button type="button" id="log">Open text log</button><button type="button" id="workingFolder">Saved data folder</button><button type="button" id="clearPartials">Clear partials…</button>
+        <button type="button" id="remove">Remove from list…</button><button type="button" id="deleteFiles">Delete files…</button>
       </div>
     </div>
   </section>
@@ -147,6 +148,9 @@ function render() {
   else $('progress').value = percentage;
   $('pause').hidden = active !== job.id;
   $('pause').disabled = paused;
+  $('remove').disabled = active === job.id || pending;
+  $('deleteFiles').disabled = active === job.id || pending;
+  $('clearPartials').disabled = Boolean(active) || pending;
   $('resume').hidden = done || Boolean(active);
   $('resume').disabled = pending || !online;
   text('resume', (job.folder || job.onePass) && !job.canFinish ? 'Restart' : 'Resume');
@@ -191,7 +195,19 @@ $('setup').onsubmit = event => {
   send({ action: 'start', ...Object.fromEntries(['link', 'name', 'destination', 'connections', 'speedCap', 'checksum',
     'brutal', 'subfolder', 'notifications', 'onePass'].map(id => [id, $(id).type === 'checkbox' ? $(id).checked : $(id).value])) });
 };
-$('pause').onclick = () => { paused = true; render(); send({ action: 'pause' }); };
+$('pause').onclick = () => { paused = true; render(); send({ action: 'pause', id: selected }); };
+$('remove').onclick = () => {
+  if (active === selected || pending) return;
+  if (confirm('Remove this download from History? Its downloaded files and partial progress stay on disk.')) {
+    pending = true; render(); send({action:'remove', id:selected});
+  }
+};
+$('deleteFiles').onclick = () => {
+  if (active === selected || pending) return;
+  if (confirm('Move this download’s tracked files and partials to Trash and remove it from History? Other files in the save folder stay untouched. Emptying Trash later reclaims the space.')) {
+    pending = true; render(); send({action:'deleteFiles', id:selected});
+  }
+};
 $('workingFolder').onclick = () => send({action:'workingFolder', id:selected});
 $('clearPartials').onclick = () => {
   if (active) return notice('Pause the active download first.');

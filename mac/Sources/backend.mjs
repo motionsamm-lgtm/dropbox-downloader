@@ -49,7 +49,12 @@ async function handle(line) {
       output({type:'installUpdate',archive});
       return;
     }
-    if (msg.action === 'pause') { app.pause(); return; }
+    if (msg.action === 'pause') { app.pause(msg.id); return; }
+    if (msg.action === 'remove' || msg.action === 'deleteFiles') {
+      await app.remove(msg.id, { deleteFiles: msg.action === 'deleteFiles',
+        trash: file => invoke(helper, ['--trash', file]) });
+      return;
+    }
     if (msg.action === 'start' || msg.action === 'resume') {
       if (!aria) throw new DownloadError('Install aria2 with brew install aria2, then reopen this app.');
       if (msg.action === 'start') await app.start(msg);
