@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-export const currentVersion = '1.0.2';
+export const currentVersion = '1.1.0';
 export const manifestURL = 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json';
 export function newer(a, b) {
   if (!/^\d+\.\d+\.\d+$/.test(a)) return false;
