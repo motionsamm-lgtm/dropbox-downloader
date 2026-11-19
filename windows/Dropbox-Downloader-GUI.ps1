@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 trap {
@@ -104,7 +104,6 @@ $form.AutoScrollMinSize = [Drawing.Size]::new(0, 0)
 $form.MaximizeBox = $true
 $form.MinimizeBox = $true
 $form.AutoScaleMode = 'Dpi'
-$form.MaximizedBounds = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.Font = [Drawing.Font]::new('Segoe UI', 10)
 $form.BackColor = [Drawing.Color]::FromArgb(9, 9, 10)
 $form.ForeColor = [Drawing.Color]::FromArgb(235, 235, 239)
