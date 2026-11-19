@@ -23,8 +23,9 @@ namespace GobWindow {
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
     const int WM_NCHITTEST=0x84, WM_NCLBUTTONDOWN=0xA1, HTCAPTION=2;
     public int ResizeBorder=7;
+    public bool GobMaximized=false;
     protected override void WndProc(ref Message m) {
-      if (m.Msg==WM_NCHITTEST && WindowState!=FormWindowState.Maximized) {
+      if (m.Msg==WM_NCHITTEST && !GobMaximized) {
         base.WndProc(ref m);
         if ((int)m.Result==1) {
           long lp=m.LParam.ToInt64(); int sx=(short)(lp&0xffff), sy=(short)((lp>>16)&0xffff);
@@ -59,7 +60,6 @@ $form.AutoScroll = $false
 $form.MaximizeBox = $true
 $form.MinimizeBox = $true
 $form.AutoScaleMode = 'Dpi'
-$form.MaximizedBounds = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.Font = [Drawing.Font]::new('Segoe UI', 10)
 $form.BackColor = [Drawing.Color]::FromArgb(15, 17, 21)
 $form.ForeColor = [Drawing.Color]::FromArgb(239, 242, 247)
@@ -104,6 +104,22 @@ $captionButtons.Padding = [Windows.Forms.Padding]::new(0)
 $captionButtons.Margin = [Windows.Forms.Padding]::new(0)
 $captionButtons.BackColor = $caption.BackColor
 $caption.Controls.Add($captionButtons)
+$script:gobCustomMaximized = $false
+$script:gobRestoreBounds = $form.Bounds
+function Set-GobCustomMaximized([bool]$Maximized) {
+    if ($Maximized -and -not $script:gobCustomMaximized) {
+        $script:gobRestoreBounds = $form.Bounds
+        $form.WindowState = [Windows.Forms.FormWindowState]::Normal
+        $form.Bounds = [Windows.Forms.Screen]::FromControl($form).WorkingArea
+        $script:gobCustomMaximized = $true
+        $form.GobMaximized = $true
+    } elseif (-not $Maximized -and $script:gobCustomMaximized) {
+        $script:gobCustomMaximized = $false
+        $form.GobMaximized = $false
+        $form.WindowState = [Windows.Forms.FormWindowState]::Normal
+        $form.Bounds = $script:gobRestoreBounds
+    }
+}
 foreach ($captionSpec in @(@('×','Close'),@('□','Maximize'),@('—','Minimize'))) {
     $captionButton = New-Object Windows.Forms.Button
     $captionButton.Text = $captionSpec[0]
@@ -120,14 +136,7 @@ foreach ($captionSpec in @(@('×','Close'),@('□','Maximize'),@('—','Minimize
         switch ($this.Tag) {
             'Close' { $form.Close() }
             'Minimize' { $form.WindowState = [Windows.Forms.FormWindowState]::Minimized }
-            'Maximize' {
-                if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Maximized) {
-                    $form.WindowState = [Windows.Forms.FormWindowState]::Normal
-                } else {
-                    $form.MaximizedBounds = [Windows.Forms.Screen]::FromControl($form).WorkingArea
-                    $form.WindowState = [Windows.Forms.FormWindowState]::Maximized
-                }
-            }
+            'Maximize' { Set-GobCustomMaximized (-not $script:gobCustomMaximized) }
         }
     })
     if ($captionSpec[1] -eq 'Close') {
@@ -144,13 +153,7 @@ $caption.Add_MouseDown($dragCaption)
 $captionIcon.Add_MouseDown($dragCaption)
 $captionTitle.Add_MouseDown($dragCaption)
 $captionSubtitle.Add_MouseDown($dragCaption)
-$toggleMaximize = {
-    if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Maximized) { $form.WindowState = [Windows.Forms.FormWindowState]::Normal }
-    else {
-        $form.MaximizedBounds = [Windows.Forms.Screen]::FromControl($form).WorkingArea
-        $form.WindowState = [Windows.Forms.FormWindowState]::Maximized
-    }
-}
+$toggleMaximize = { Set-GobCustomMaximized (-not $script:gobCustomMaximized) }
 $caption.Add_DoubleClick($toggleMaximize)
 $captionIcon.Add_DoubleClick($toggleMaximize)
 $captionTitle.Add_DoubleClick($toggleMaximize)
@@ -316,7 +319,7 @@ $form.Add_Resize({
     catch { if ($detail) { $detail.Text = 'Layout adjustment failed: ' + $_.Exception.Message } }
     foreach ($button in $captionButtons.Controls) {
         if ($button.Tag -eq 'Maximize') {
-            $button.Text = if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Maximized) { '❐' } else { '□' }
+            $button.Text = if ($script:gobCustomMaximized) { '❐' } else { '□' }
         }
     }
 })
