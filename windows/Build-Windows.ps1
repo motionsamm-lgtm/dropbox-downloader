@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 $archive = Join-Path $env:RUNNER_TEMP 'aria2.zip'
 Invoke-WebRequest 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip' -OutFile $archive
@@ -65,10 +65,14 @@ if ($check.ExitCode) { Get-Content "$env:LOCALAPPDATA\GOB\startup.log.txt" -Erro
 $smoke = Start-Process .\dist\portable\GOB.exe -ArgumentList '--smoke-test' -PassThru
 $seenWindow = $false
 $wrongChild = $false
-$until = (Get-Date).AddSeconds(25)
+$smokeStarted = Get-Date
+$until = $smokeStarted.AddSeconds(25)
 while (-not $smoke.HasExited -and (Get-Date) -lt $until) {
     $smoke.Refresh()
-    if ($smoke.MainWindowTitle -like 'GOB*') { $seenWindow = $true }
+    if ($smoke.MainWindowTitle -like 'GOB*') {
+        $seenWindow = $true
+        if (((Get-Date) - $smokeStarted).TotalSeconds -ge 2) { [void]$smoke.CloseMainWindow() }
+    }
     $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $($smoke.Id)"
     if ($children.Name -contains 'powershell.exe') { $wrongChild = $true }
     Start-Sleep -Milliseconds 150
