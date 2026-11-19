@@ -12,7 +12,7 @@ trap {
 
 # Borderless caption, with Windows-native hit testing for resize and snap behavior.
 if (-not ('GobWindow.GobForm' -as [type])) {
-    Add-Type -TypeDefinition @'
+    $gobFormSource = @'
 using System;
 using System.Drawing;
 using System.Windows.Forms;
@@ -43,6 +43,10 @@ namespace GobWindow {
   }
 }
 '@
+    Add-Type -TypeDefinition $gobFormSource -ReferencedAssemblies @(
+        [Windows.Forms.Form].Assembly.Location,
+        [Drawing.Color].Assembly.Location
+    )
 }
 $form = New-Object GobWindow.GobForm
 $form.Text = 'GOB — Grab Our Bytes'
