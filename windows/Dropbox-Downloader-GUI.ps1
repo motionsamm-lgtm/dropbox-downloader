@@ -308,7 +308,8 @@ function Resize-Layout {
     $history.Columns[5].Width = [Math]::Max(85,$history.Width - $columnTotal - 4)
 }
 $form.Add_Resize({
-    Resize-Layout
+    try { Resize-Layout }
+    catch { if ($detail) { $detail.Text = 'Layout adjustment failed: ' + $_.Exception.Message } }
     foreach ($button in $captionButtons.Controls) {
         if ($button.Tag -eq 'Maximize') {
             $button.Text = if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Maximized) { '❐' } else { '□' }
@@ -341,7 +342,6 @@ $captionSubtitle.BackColor = $caption.BackColor
 $captionIcon.BackColor = $caption.BackColor
 $start.BackColor = [Drawing.Color]::FromArgb(10,105,232)
 $start.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(10,105,232)
-$form.Add_Shown({ Resize-Layout })
 $script:jobs = @{}
 $script:activeJob = $false
 $historyRoot = Get-HistoryDirectory
@@ -762,6 +762,9 @@ $form.Add_FormClosing({
 $updateRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB'
 $updateStatePath = Join-Path $updateRoot 'update-state.json'
 $updateButton = Add-Control Button 'Check for updates' 445 745 175 30
+Set-UiTheme $savedFolder
+Set-UiTheme $clearPartial
+Set-UiTheme $updateButton
 $script:updateAvailable = $false
 $script:updateCheck = $null
 $script:lastUpdateCheck = [DateTime]::MinValue
@@ -820,6 +823,7 @@ try {
     try { $guiLocked = $guiLock.WaitOne(0) }
     catch [Threading.AbandonedMutexException] { $guiLocked = $true }
     if (-not $guiLocked) { Show-UiError 'The downloader window is already open.'; return }
+    Resize-Layout
     Update-DownloadHistory
     if ($history.Items.Count) { $history.Items[0].Selected = $true }
     $timer.Start()
