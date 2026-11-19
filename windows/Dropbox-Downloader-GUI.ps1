@@ -278,13 +278,21 @@ function Resize-Layout {
     $progress.Top = $history.Bottom + 12
     $detail.Top = $progress.Bottom + 8
     foreach ($button in @($resume,$openLog,$markDone,$pause)) { $button.Top = $actionsTop }
-    $removeDownload.Top = $h - 74
-    $deleteDownload.Top = $h - 74
-    $folderFiles.Top = $h - 74
+    $middleTop = $h - 74
+    $bottomTop = $h - 32
+    $savedFolder.Top = $middleTop
+    $clearPartial.Top = $middleTop
+    $updateButton.Top = $middleTop
+    $removeDownload.Top = $bottomTop
+    $deleteDownload.Top = $bottomTop
+    $folderFiles.Top = $bottomTop
     $resume.Left = 26
     $openLog.Left = 187
     $markDone.Left = 325
     $pause.Left = $right - $pause.Width
+    $savedFolder.Left = 27
+    $clearPartial.Left = 187
+    $updateButton.Left = $right - $updateButton.Width
     $removeDownload.Left = 27
     $deleteDownload.Left = 187
     $folderFiles.Left = 325
@@ -740,6 +748,7 @@ $timer.Add_Tick({
 })
 $form.Add_FormClosing({
     param($sender, $eventArgs)
+    if ($GobSmokeTest) { return }
     if ($eventArgs.CloseReason -ne [Windows.Forms.CloseReason]::UserClosing) { return }
     try { Update-DownloadHistory } catch { Write-Verbose 'Could not refresh before closing.' }
     if (-not $script:activeJob) { return }
@@ -818,7 +827,7 @@ try {
         $smokeTimer = New-Object Windows.Forms.Timer
         $smokeTimer.Interval = 700
         $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close() })
-        $form.Add_Shown({ $smokeTimer.Start() })
+        $smokeTimer.Start()
     }
     [void]$form.ShowDialog()
     if ($GobSmokeTest) { $smokeTimer.Dispose() }
