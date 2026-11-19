@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 trap {
@@ -10,25 +10,153 @@ trap {
 . (Join-Path $PSScriptRoot 'Download-Notifications.ps1')
 [Windows.Forms.Application]::EnableVisualStyles()
 
-$form = New-Object Windows.Forms.Form
+# Borderless caption, with Windows-native hit testing for resize and snap behavior.
+if (-not ('GobWindow.GobForm' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Windows.Forms;
+using System.Runtime.InteropServices;
+namespace GobWindow {
+  public class GobForm : Form {
+    [DllImport("user32.dll")] static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    const int WM_NCHITTEST=0x84, WM_NCLBUTTONDOWN=0xA1, HTCAPTION=2;
+    public int ResizeBorder=7;
+    protected override void WndProc(ref Message m) {
+      if (m.Msg==WM_NCHITTEST && WindowState!=FormWindowState.Maximized) {
+        base.WndProc(ref m);
+        if ((int)m.Result==1) {
+          long lp=m.LParam.ToInt64(); int sx=(short)(lp&0xffff), sy=(short)((lp>>16)&0xffff);
+          Point p=PointToClient(new Point(sx,sy)); int b=ResizeBorder;
+          bool l=p.X<b, r=p.X>=ClientSize.Width-b, t=p.Y<b, bt=p.Y>=ClientSize.Height-b;
+          if (t&&l) m.Result=(IntPtr)13; else if(t&&r) m.Result=(IntPtr)14;
+          else if(bt&&l) m.Result=(IntPtr)16; else if(bt&&r) m.Result=(IntPtr)17;
+          else if(l) m.Result=(IntPtr)10; else if(r) m.Result=(IntPtr)11;
+          else if(t) m.Result=(IntPtr)12; else if(bt) m.Result=(IntPtr)15;
+        }
+        return;
+      }
+      base.WndProc(ref m);
+    }
+    public void BeginCaptionDrag() { ReleaseCapture(); SendMessage(Handle,WM_NCLBUTTONDOWN,(IntPtr)HTCAPTION,IntPtr.Zero); }
+  }
+}
+'@
+}
+$form = New-Object GobWindow.GobForm
 $form.Text = 'GOB — Grab Our Bytes'
 $form.Icon = [Drawing.Icon]::new((Join-Path $PSScriptRoot 'GOB.ico'))
-$form.ClientSize = [Drawing.Size]::new(660, 830)
+$form.ClientSize = [Drawing.Size]::new(980, 860)
 $form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'Sizable'
-$form.MinimumSize = [Drawing.Size]::new(650, 600)
-$form.AutoScroll = $true
-$form.AutoScrollMinSize = [Drawing.Size]::new(650, 830)
-$form.ClientSize = [Drawing.Size]::new(660, [Math]::Min(830, [Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 80))
+$form.FormBorderStyle = 'None'
+$form.MinimumSize = [Drawing.Size]::new(780, 840)
+$form.AutoScroll = $false
 $form.MaximizeBox = $true
+$form.MinimizeBox = $true
 $form.AutoScaleMode = 'Dpi'
+$form.MaximizedBounds = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $form.Font = [Drawing.Font]::new('Segoe UI', 10)
-$form.BackColor = [Drawing.Color]::FromArgb(245, 247, 251)
+$form.BackColor = [Drawing.Color]::FromArgb(15, 17, 21)
+$form.ForeColor = [Drawing.Color]::FromArgb(239, 242, 247)
+$script:ContentTop = 42
+
+$caption = New-Object Windows.Forms.Panel
+$caption.Dock = 'Top'
+$caption.Height = $script:ContentTop
+$caption.BackColor = [Drawing.Color]::FromArgb(18, 21, 26)
+$caption.Cursor = [Windows.Forms.Cursors]::SizeAll
+$form.Controls.Add($caption)
+$captionIcon = New-Object Windows.Forms.PictureBox
+$captionIcon.Size = [Drawing.Size]::new(22,22)
+$captionIcon.Location = [Drawing.Point]::new(14,10)
+$captionIcon.SizeMode = 'Zoom'
+$captionIcon.Image = $form.Icon.ToBitmap()
+$captionIcon.Cursor = [Windows.Forms.Cursors]::SizeAll
+$caption.Controls.Add($captionIcon)
+$captionTitle = New-Object Windows.Forms.Label
+$captionTitle.Text = 'GOB'
+$captionTitle.Font = [Drawing.Font]::new('Segoe UI Semibold',10)
+$captionTitle.ForeColor = [Drawing.Color]::FromArgb(238,242,247)
+$captionTitle.AutoSize = $true
+$captionTitle.Location = [Drawing.Point]::new(44,12)
+$captionTitle.Cursor = [Windows.Forms.Cursors]::SizeAll
+$caption.Controls.Add($captionTitle)
+$captionSubtitle = New-Object Windows.Forms.Label
+$captionSubtitle.Text = 'GRAB OUR BYTES'
+$captionSubtitle.Font = [Drawing.Font]::new('Segoe UI',8)
+$captionSubtitle.ForeColor = [Drawing.Color]::FromArgb(133,146,163)
+$captionSubtitle.AutoSize = $true
+$captionSubtitle.Location = [Drawing.Point]::new(87,14)
+$captionSubtitle.Cursor = [Windows.Forms.Cursors]::SizeAll
+$caption.Controls.Add($captionSubtitle)
+$captionButtons = New-Object Windows.Forms.FlowLayoutPanel
+$captionButtons.Dock = 'Right'
+$captionButtons.Width = 138
+$captionButtons.Height = $script:ContentTop
+$captionButtons.FlowDirection = 'RightToLeft'
+$captionButtons.WrapContents = $false
+$captionButtons.Padding = [Windows.Forms.Padding]::new(0)
+$captionButtons.Margin = [Windows.Forms.Padding]::new(0)
+$captionButtons.BackColor = $caption.BackColor
+$caption.Controls.Add($captionButtons)
+foreach ($captionSpec in @(@('×','Close'),@('□','Maximize'),@('—','Minimize'))) {
+    $captionButton = New-Object Windows.Forms.Button
+    $captionButton.Text = $captionSpec[0]
+    $captionButton.Tag = $captionSpec[1]
+    $captionButton.Size = [Drawing.Size]::new(46,$script:ContentTop)
+    $captionButton.Margin = [Windows.Forms.Padding]::new(0)
+    $captionButton.FlatStyle = 'Flat'
+    $captionButton.FlatAppearance.BorderSize = 0
+    $captionButton.BackColor = $caption.BackColor
+    $captionButton.ForeColor = [Drawing.Color]::FromArgb(218,224,232)
+    $captionButton.Font = [Drawing.Font]::new('Segoe UI',11)
+    $captionButton.Cursor = [Windows.Forms.Cursors]::Hand
+    $captionButton.Add_Click({
+        switch ($this.Tag) {
+            'Close' { $form.Close() }
+            'Minimize' { $form.WindowState = [Windows.Forms.FormWindowState]::Minimized }
+            'Maximize' {
+                if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Maximized) {
+                    $form.WindowState = [Windows.Forms.FormWindowState]::Normal
+                } else {
+                    $form.MaximizedBounds = [Windows.Forms.Screen]::FromControl($form).WorkingArea
+                    $form.WindowState = [Windows.Forms.FormWindowState]::Maximized
+                }
+            }
+        }
+    })
+    if ($captionSpec[1] -eq 'Close') {
+        $captionButton.Add_MouseEnter({ $this.BackColor = [Drawing.Color]::FromArgb(196,48,48); $this.ForeColor = [Drawing.Color]::White })
+        $captionButton.Add_MouseLeave({ $this.BackColor = $caption.BackColor; $this.ForeColor = [Drawing.Color]::FromArgb(218,224,232) })
+    } else {
+        $captionButton.Add_MouseEnter({ $this.BackColor = [Drawing.Color]::FromArgb(43,49,58) })
+        $captionButton.Add_MouseLeave({ $this.BackColor = $caption.BackColor })
+    }
+    $captionButtons.Controls.Add($captionButton)
+}
+$dragCaption = { if ($_.Button -eq [Windows.Forms.MouseButtons]::Left) { $form.BeginCaptionDrag() } }
+$caption.Add_MouseDown($dragCaption)
+$captionIcon.Add_MouseDown($dragCaption)
+$captionTitle.Add_MouseDown($dragCaption)
+$captionSubtitle.Add_MouseDown($dragCaption)
+$toggleMaximize = {
+    if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Maximized) { $form.WindowState = [Windows.Forms.FormWindowState]::Normal }
+    else {
+        $form.MaximizedBounds = [Windows.Forms.Screen]::FromControl($form).WorkingArea
+        $form.WindowState = [Windows.Forms.FormWindowState]::Maximized
+    }
+}
+$caption.Add_DoubleClick($toggleMaximize)
+$captionIcon.Add_DoubleClick($toggleMaximize)
+$captionTitle.Add_DoubleClick($toggleMaximize)
+$captionSubtitle.Add_DoubleClick($toggleMaximize)
+
 
 function Add-Control([string]$Type, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height) {
     $control = New-Object "Windows.Forms.$Type"
     $control.Text = $Text
-    $control.Location = [Drawing.Point]::new($X, $Y)
+    $control.Location = [Drawing.Point]::new($X, ($Y + $script:ContentTop))
     $control.Size = [Drawing.Size]::new($Width, $Height)
     $form.Controls.Add($control)
     return $control
@@ -127,6 +255,85 @@ $pause = Add-Control Button 'Pause download' 458 705 176 30
 $removeDownload = Add-Control Button 'Remove from list...' 27 785 150 30
 $deleteDownload = Add-Control Button 'Delete files...' 187 785 130 30
 $folderFiles = Add-Control Button 'Show files' 325 785 125 30
+
+# Keep the form fluid without Anchor/manual-layout conflicts. The download engine
+# and all existing transfer and history handlers remain unchanged.
+function Resize-Layout {
+    $w = $form.ClientSize.Width
+    $h = $form.ClientSize.Height
+    $right = $w - 28
+    $gap = 9
+    $paste.Left = $right - 84
+    $browse.Left = $paste.Left
+    $start.Left = $right - $start.Width
+    $linkBox.Width = [Math]::Max(260, $paste.Left - $linkBox.Left - $gap)
+    $directory.Width = [Math]::Max(260, $browse.Left - $directory.Left - $gap)
+    $nameBox.Width = [Math]::Max(300, $right - $nameBox.Left)
+    $checksum.Width = [Math]::Max(260, $right - $checksum.Left)
+    $status.Width = [Math]::Max(260, $start.Left - $status.Left - $gap)
+    $heading.Width = [Math]::Max(500, $right - $heading.Left)
+    $history.Width = $heading.Width
+    $actionsTop = $h - 116
+    $history.Height = [Math]::Max(90, [Math]::Min(220, $actionsTop - $history.Top - 70))
+    $progress.Top = $history.Bottom + 12
+    $detail.Top = $progress.Bottom + 8
+    foreach ($button in @($resume,$openLog,$markDone,$pause)) { $button.Top = $actionsTop }
+    $removeDownload.Top = $h - 74
+    $deleteDownload.Top = $h - 74
+    $folderFiles.Top = $h - 74
+    $resume.Left = 26
+    $openLog.Left = 187
+    $markDone.Left = 325
+    $pause.Left = $right - $pause.Width
+    $removeDownload.Left = 27
+    $deleteDownload.Left = 187
+    $folderFiles.Left = 325
+    $notify.Left = [int](($w - $notify.Width) / 2)
+    $brutal.Left = $right - $brutal.Width
+    $heading.Width = $history.Width
+    $progress.Width = $history.Width
+    $detail.Width = $history.Width
+    $columnWidths = @([int]($history.Width*.29),[int]($history.Width*.15),[int]($history.Width*.12),[int]($history.Width*.15),[int]($history.Width*.11))
+    for ($i=0; $i -lt 5; $i++) { $history.Columns[$i].Width = [Math]::Max(70,$columnWidths[$i]) }
+    $columnTotal = 0
+    for ($i=0; $i -lt 5; $i++) { $columnTotal += $history.Columns[$i].Width }
+    $history.Columns[5].Width = [Math]::Max(85,$history.Width - $columnTotal - 4)
+}
+$form.Add_Resize({
+    Resize-Layout
+    foreach ($button in $captionButtons.Controls) {
+        if ($button.Tag -eq 'Maximize') {
+            $button.Text = if ($form.WindowState -eq [Windows.Forms.FormWindowState]::Maximized) { '❐' } else { '□' }
+        }
+    }
+})
+function Set-UiTheme([Windows.Forms.Control]$Control) {
+    $Control.BackColor = [Drawing.Color]::FromArgb(28,32,39)
+    $Control.ForeColor = [Drawing.Color]::FromArgb(239,242,247)
+    if ($Control -is [Windows.Forms.Button]) {
+        $Control.FlatStyle = 'Flat'
+        $Control.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(62,70,82)
+        $Control.BackColor = [Drawing.Color]::FromArgb(36,42,51)
+    } elseif ($Control -is [Windows.Forms.TextBox] -or $Control -is [Windows.Forms.NumericUpDown]) {
+        $Control.BackColor = [Drawing.Color]::FromArgb(20,23,28)
+        $Control.ForeColor = [Drawing.Color]::FromArgb(245,247,251)
+    } elseif ($Control -is [Windows.Forms.ListView]) {
+        $Control.BackColor = [Drawing.Color]::FromArgb(20,23,28)
+        $Control.ForeColor = [Drawing.Color]::FromArgb(239,242,247)
+        $Control.BorderStyle = 'FixedSingle'
+    } elseif ($Control -is [Windows.Forms.ProgressBar]) {
+        $Control.BackColor = [Drawing.Color]::FromArgb(20,23,28)
+    }
+}
+foreach ($control in $form.Controls) { Set-UiTheme $control }
+$caption.BackColor = [Drawing.Color]::FromArgb(18,21,26)
+$captionButtons.BackColor = $caption.BackColor
+$captionTitle.BackColor = $caption.BackColor
+$captionSubtitle.BackColor = $caption.BackColor
+$captionIcon.BackColor = $caption.BackColor
+$start.BackColor = [Drawing.Color]::FromArgb(10,105,232)
+$start.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(10,105,232)
+$form.Add_Shown({ Resize-Layout })
 $script:jobs = @{}
 $script:activeJob = $false
 $historyRoot = Get-HistoryDirectory
