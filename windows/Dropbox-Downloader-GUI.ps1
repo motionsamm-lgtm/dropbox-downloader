@@ -13,7 +13,8 @@ trap {
 # Borderless shell with native edge hit-testing: GOB owns the caption visuals,
 # while Windows still handles normal drag/resize/maximize snapping.
 if (-not ('GobWindow.GobForm' -as [type])) {
-    Add-Type -TypeDefinition @'
+    $windowsUiReferences = @([Windows.Forms.Form].Assembly.Location, [Drawing.Color].Assembly.Location)
+    Add-Type -ReferencedAssemblies $windowsUiReferences -TypeDefinition @'
 using System;
 using System.Drawing;
 using System.Windows.Forms;
