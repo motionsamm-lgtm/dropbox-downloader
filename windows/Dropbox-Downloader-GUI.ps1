@@ -834,7 +834,14 @@ try {
     Update-DownloadHistory
     if ($history.Items.Count) { $history.Items[0].Selected = $true }
     $timer.Start()
+    if ($GobSmokeTest) {
+        $smokeTimer = New-Object Windows.Forms.Timer
+        $smokeTimer.Interval = 700
+        $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close() })
+        $smokeTimer.Start()
+    }
     [void]$form.ShowDialog()
+    if ($GobSmokeTest) { $smokeTimer.Dispose() }
 } finally {
     $updateTimer.Dispose()
     $timer.Dispose()
