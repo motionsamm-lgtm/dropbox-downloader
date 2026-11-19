@@ -68,8 +68,15 @@ namespace GobWindow {
   public class GobForm : Form {
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("dwmapi.dll", PreserveSig=true)] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     const int WM_NCHITTEST=0x84, WM_NCLBUTTONDOWN=0xA1, HTCAPTION=2;
+    const int DWMWA_WINDOW_CORNER_PREFERENCE=33, DWMWCP_ROUND=2;
     public int ResizeBorder=7;
+    protected override void OnHandleCreated(EventArgs e) {
+      base.OnHandleCreated(e);
+      try { int preference=DWMWCP_ROUND; DwmSetWindowAttribute(Handle,DWMWA_WINDOW_CORNER_PREFERENCE,ref preference,sizeof(int)); }
+      catch { /* Older Windows versions do not expose DWM corner preferences. */ }
+    }
     protected override void WndProc(ref Message m) {
       if (m.Msg==WM_NCHITTEST && WindowState!=FormWindowState.Maximized) {
         base.WndProc(ref m);
@@ -116,10 +123,18 @@ $caption.BackColor = [Drawing.Color]::FromArgb(13, 13, 15)
 $caption.Cursor = [Windows.Forms.Cursors]::SizeAll
 $form.Controls.Add($caption)
 $captionIcon = New-Object Windows.Forms.PictureBox
-$captionIcon.Size = [Drawing.Size]::new(22,22)
-$captionIcon.Location = [Drawing.Point]::new(14,10)
+$captionIcon.Size = [Drawing.Size]::new(24,24)
+$captionIcon.Location = [Drawing.Point]::new(13,9)
 $captionIcon.SizeMode = 'Zoom'
-$captionIcon.Image = $form.Icon.ToBitmap()
+$logoPath = Join-Path $PSScriptRoot 'GOB.png'
+if ([IO.File]::Exists($logoPath)) {
+    $logoStream = [IO.MemoryStream]::new([IO.File]::ReadAllBytes($logoPath))
+    try {
+        $logoSource = [Drawing.Image]::FromStream($logoStream)
+        $captionIcon.Image = [Drawing.Bitmap]::new($logoSource)
+        $logoSource.Dispose()
+    } finally { $logoStream.Dispose() }
+} else { $captionIcon.Image = $form.Icon.ToBitmap() }
 $captionIcon.Cursor = [Windows.Forms.Cursors]::SizeAll
 $caption.Controls.Add($captionIcon)
 $captionTitle = New-Object Windows.Forms.Label
