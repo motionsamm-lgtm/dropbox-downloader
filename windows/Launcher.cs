@@ -10,8 +10,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("GOB")]
 [assembly: AssemblyProduct("GOB — Grab Our Bytes")]
 [assembly: AssemblyDescription("GOB download manager")]
-[assembly: AssemblyVersion("1.1.1.0")]
-[assembly: AssemblyFileVersion("1.1.1.0")]
+[assembly: AssemblyVersion("1.1.2.0")]
+[assembly: AssemblyFileVersion("1.1.2.0")]
 class Launcher {
  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
  static extern int SetCurrentProcessExplicitAppUserModelID(string id);
