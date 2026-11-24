@@ -1,15 +1,17 @@
 ﻿$ErrorActionPreference = 'Stop'
 $script:settingsPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'GOB\settings.json'
-$script:userSettings = [ordered]@{ appearance='system'; accent='#4f86e8'; surface=''; text=''; folderSubfolder=$true; notifications=$true; brutal=$true; folderOutput='folder' }
+$script:userSettings = [ordered]@{ appearance='system'; preset='brick'; accent='#4f86e8'; surface=''; text=''; folderSubfolder=$true; notifications=$true; brutal=$true; folderOutput='folder' }
 try {
     if ([IO.File]::Exists($script:settingsPath)) {
         $saved = Get-Content -LiteralPath $script:settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($key in @('appearance','accent','surface','text','folderSubfolder','notifications','brutal','folderOutput')) {
+        if (-not $saved.preset) { $script:userSettings.preset = 'matte' }
+        foreach ($key in @('appearance','preset','accent','surface','text','folderSubfolder','notifications','brutal','folderOutput')) {
             if ($null -ne $saved.$key) { $script:userSettings[$key] = $saved.$key }
         }
     }
 } catch { Write-Verbose 'Using the default GOB settings.' }
 if($script:userSettings.appearance -notin @('system','light','dark')){$script:userSettings.appearance='system'}
+if($script:userSettings.preset -notin @('brick','matte')){$script:userSettings.preset='brick'}
 if($script:userSettings.folderOutput -notin @('folder','zip')){$script:userSettings.folderOutput='folder'}
 foreach($key in @('accent','surface','text')){if([string]$script:userSettings[$key] -notmatch '^#[0-9a-fA-F]{6}$' -and $key -ne 'accent'){$script:userSettings[$key]=''}}
 if([string]$script:userSettings.accent -notmatch '^#[0-9a-fA-F]{6}$'){$script:userSettings.accent='#4f86e8'}
@@ -55,16 +57,28 @@ namespace GobWindow {
     public Color Surface = Color.FromArgb(16,17,19);
     public Color Stroke = Color.FromArgb(42,43,46);
     public int CornerRadius = 14;
+    public int StrokeWidth = 1;
+    public int ShadowDepth = 0;
+    public Color ShadowColor = Color.Black;
     public GobCard() { BackColor=Color.FromArgb(9,9,10); DoubleBuffered=true; SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.ResizeRedraw,true); }
     protected override void OnPaintBackground(PaintEventArgs e) {
       e.Graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-      int d=CornerRadius*2; Rectangle r=new Rectangle(0,0,Width-1,Height-1);
       using(var bg=new SolidBrush(BackColor)) e.Graphics.FillRectangle(bg,ClientRectangle);
+      int inset=StrokeWidth/2;
+      var r=new Rectangle(inset,inset,Width-1-2*inset,Height-1-2*inset-ShadowDepth);
+      int d=Math.Min(CornerRadius*2,Math.Min(r.Width,r.Height));
+      if(d<=0) return;
       using(var path=new System.Drawing.Drawing2D.GraphicsPath()) {
         path.AddArc(r.X,r.Y,d,d,180,90); path.AddArc(r.Right-d,r.Y,d,d,270,90);
         path.AddArc(r.Right-d,r.Bottom-d,d,d,0,90); path.AddArc(r.X,r.Bottom-d,d,d,90,90); path.CloseFigure();
+        if(ShadowDepth>0) {
+          var state=e.Graphics.Save();
+          e.Graphics.TranslateTransform(0,ShadowDepth);
+          using(var shadow=new SolidBrush(ShadowColor)) e.Graphics.FillPath(shadow,path);
+          e.Graphics.Restore(state);
+        }
         using(var b=new SolidBrush(Surface)) e.Graphics.FillPath(b,path);
-        using(var p=new Pen(Stroke,1)) e.Graphics.DrawPath(p,path);
+        using(var p=new Pen(Stroke,StrokeWidth)) e.Graphics.DrawPath(p,path);
       }
     }
     protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); }
@@ -137,7 +151,7 @@ $form.ClientSize = [Drawing.Size]::new(1160, 900)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'None'
 $form.MinimumSize = [Drawing.Size]::new(980, 740)
-$form.AutoScroll = $false
+$form.AutoScroll = $true
 $form.AutoScrollMinSize = [Drawing.Size]::new(0, 0)
 $form.MaximizeBox = $true
 $form.MinimizeBox = $true
@@ -223,9 +237,9 @@ foreach ($captionSpec in @(@('×','Close'),@('□','Maximize'),@('—','Minimize
     })
     if ($captionSpec[1] -eq 'Close') {
         $captionButton.Add_MouseEnter({ $this.BackColor = [Drawing.Color]::FromArgb(196,48,48); $this.ForeColor = [Drawing.Color]::White })
-        $captionButton.Add_MouseLeave({ $this.BackColor = $caption.BackColor; $this.ForeColor = [Drawing.Color]::FromArgb(218,224,232) })
+        $captionButton.Add_MouseLeave({ $this.BackColor = $caption.BackColor; $this.ForeColor = $script:themePalette.text })
     } else {
-        $captionButton.Add_MouseEnter({ $this.BackColor = [Drawing.Color]::FromArgb(43,49,58) })
+        $captionButton.Add_MouseEnter({ $this.BackColor = $script:themePalette.selected })
         $captionButton.Add_MouseLeave({ $this.BackColor = $caption.BackColor })
     }
     $captionButtons.Controls.Add($captionButton)
@@ -382,7 +396,8 @@ function Resize-Layout {
     $leftWidth = [int][Math]::Min(500, [Math]::Max(380, $available * 0.405))
     $rightWidth = [Math]::Max(420, $available - $leftWidth)
     $panelTop = 136
-    $panelHeight = [Math]::Max(650, $h - $panelTop - 24)
+    $panelHeight = [Math]::Max(690, $h - $panelTop - 24)
+    $form.AutoScrollMinSize = [Drawing.Size]::new(0, ($panelTop + 714))
     $leftCard.Location = [Drawing.Point]::new($margin, $panelTop)
     $leftCard.Size = [Drawing.Size]::new($leftWidth, $panelHeight)
     $rightCard.Location = [Drawing.Point]::new(($margin + $leftWidth + $gap), $panelTop)
@@ -425,9 +440,9 @@ function Resize-Layout {
     $checksum.Location = [Drawing.Point]::new(22, 540)
     $checksum.Size = [Drawing.Size]::new($inner, 35)
     $status.Location = [Drawing.Point]::new(22, 594)
-    $status.Size = [Drawing.Size]::new($inner, 50)
-    $start.Location = [Drawing.Point]::new(($leftWidth - 22 - 172), ([Math]::Min(675, $panelHeight - 60)))
-    $start.Size = [Drawing.Size]::new(172, 42)
+    $status.Size = [Drawing.Size]::new($inner, 33)
+    $start.Location = [Drawing.Point]::new(22, ($panelHeight - 60))
+    $start.Size = [Drawing.Size]::new($inner, 42)
 
     $rightInner = $rightWidth - 40
     $rightHeading.Location = [Drawing.Point]::new(20, 20)
@@ -1027,6 +1042,14 @@ $history.Add_DrawSubItem({
     $selectedRow = $history.SelectedIndices.Contains($e.ItemIndex)
     $rowColor = if ($selectedRow) { $script:themePalette.selected } elseif (($e.ItemIndex % 2) -eq 1) { $script:themePalette.raised } else { $script:themePalette.stripe }
     $textColor = $script:themePalette.text
+    if ($script:themePalette.brick -and $e.ColumnIndex -eq 1) {
+        switch -Regex ($e.SubItem.Text) {
+            '^Completed?$' { $textColor=$script:themePalette.success }
+            '^Paused$' { $textColor=$script:themePalette.warning }
+            '^(Failed|Error)$' { $textColor=$script:themePalette.danger }
+            '^(Running|Downloading)$' { $textColor=$script:themePalette.bar }
+        }
+    }
     $brush = New-Object Drawing.SolidBrush $rowColor
     try { $e.Graphics.FillRectangle($brush, $e.Bounds) } finally { $brush.Dispose() }
     [Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.SubItem.Text, $history.Font,
@@ -1057,6 +1080,27 @@ function Get-GobPalette {
     } else {
         $p=[ordered]@{background=[Drawing.Color]::FromArgb(245,246,249);card=[Drawing.Color]::White;raised=[Drawing.Color]::FromArgb(239,241,245);text=[Drawing.Color]::FromArgb(35,37,42);muted=[Drawing.Color]::FromArgb(95,99,108);border=[Drawing.Color]::FromArgb(214,217,223);caption=[Drawing.Color]::FromArgb(248,249,251);button=[Drawing.Color]::White;selected=[Drawing.Color]::FromArgb(222,234,253);stripe=[Drawing.Color]::FromArgb(247,248,250);header=[Drawing.Color]::FromArgb(239,241,245);bar=[Drawing.Color]::FromArgb(46,105,211)}
     }
+    $p.brick = $script:userSettings.preset -eq 'brick'
+    $p.primaryText = if ($appearance -eq 'dark') { [Drawing.Color]::FromArgb(20,29,45) } else { [Drawing.Color]::White }
+    if ($p.brick) {
+        $colors = if ($appearance -eq 'dark') {
+            @{
+                background='#17141d'; card='#211d29'; raised='#2a2434'; text='#fbf9ff'; muted='#c3bacd'
+                border='#f2eff8'; caption='#211d29'; button='#211d29'; selected='#38294e'; stripe='#211d29'
+                header='#2a2434'; bar='#a27aff'; primaryText='#160d25'; shadow='#07060a'
+                success='#82dda9'; warning='#ffd17f'; danger='#ff98a3'
+            }
+        } else {
+            @{
+                background='#f8f8fa'; card='#ffffff'; raised='#f7f6fa'; text='#17171b'; muted='#666672'
+                border='#1c1c20'; caption='#ffffff'; button='#ffffff'; selected='#eee5ff'; stripe='#ffffff'
+                header='#f7f6fa'; bar='#743bf0'; primaryText='#ffffff'; shadow='#18181b'
+                success='#187348'; warning='#985d09'; danger='#b52338'
+            }
+        }
+        foreach ($key in $colors.Keys) { $p[$key] = [Drawing.ColorTranslator]::FromHtml($colors[$key]) }
+        return $p
+    }
     foreach($pair in @(@('accent','bar'),@('surface','card'),@('text','text'))) {
         $value=[string]$script:userSettings[$pair[0]]
         if($value -match '^#[0-9a-fA-F]{6}$') { $p[$pair[1]]=[Drawing.ColorTranslator]::FromHtml($value) }
@@ -1066,18 +1110,40 @@ function Get-GobPalette {
 function Apply-GobTheme {
     $script:themePalette=Get-GobPalette; $p=$script:themePalette
     $form.BackColor=$p.background; $form.ForeColor=$p.text
-    $caption.BackColor=$p.caption; $captionButtons.BackColor=$p.caption; $captionTitle.BackColor=$p.caption; $captionSubtitle.BackColor=$p.caption; $captionIcon.BackColor=$p.caption
-    foreach($card in @($leftCard,$rightCard)) { if($card){$card.BackColor=$p.background;$card.Surface=$p.card;$card.Stroke=$p.border;$card.Invalidate()} }
-    foreach($control in @($form.Controls)) {
-        if($control -is [Windows.Forms.Label]) { $control.ForeColor=$p.text; $control.BackColor=[Drawing.Color]::Transparent }
-        if($control -is [Windows.Forms.Button]) { Set-GobButton $control ($control -eq $start); $control.BackColor=if($control -eq $start){$p.bar}else{$p.button}; $control.ForeColor=if($control -eq $start){if($p.background.R -lt 50){[Drawing.Color]::FromArgb(20,29,45)}else{[Drawing.Color]::White}}else{$p.text}; $control.FlatAppearance.BorderColor=$p.border; $control.FlatAppearance.MouseOverBackColor=$p.raised; $control.FlatAppearance.MouseDownBackColor=$p.selected }
-    }
+    $caption.BackColor=$p.caption
+    foreach ($control in @($captionButtons,$captionTitle,$captionSubtitle,$captionIcon)) { $control.BackColor=$p.caption }
+    $captionTitle.ForeColor=$p.text
+    $captionSubtitle.ForeColor=$p.muted
+    foreach ($button in $captionButtons.Controls) { $button.BackColor=$p.caption; $button.ForeColor=$p.text }
     $all=New-Object 'System.Collections.Generic.Stack[Windows.Forms.Control]'
     foreach($c in $form.Controls){$all.Push($c)}
-    while($all.Count){$c=$all.Pop();foreach($child in $c.Controls){$all.Push($child)}
-        if($c -is [Windows.Forms.TextBox] -or $c -is [Windows.Forms.ComboBox] -or $c -is [Windows.Forms.NumericUpDown]){$c.BackColor=$p.raised;$c.ForeColor=$p.text}
+    while($all.Count){
+        $c=$all.Pop()
+        foreach($child in $c.Controls){$all.Push($child)}
+        if ($c -is [GobWindow.GobCard]) {
+            $c.BackColor=$p.background
+            $c.Surface=$p.card
+            $c.Stroke=$p.border
+            $c.CornerRadius=if($p.brick){19}else{14}
+            $c.StrokeWidth=if($p.brick){2}else{1}
+            $c.ShadowDepth=if($p.brick){5}else{0}
+            if($p.brick){$c.ShadowColor=$p.shadow}
+            $c.Invalidate()
+        }
+        elseif ($c -is [Windows.Forms.Label] -and $c.Parent -ne $caption) {
+            $c.ForeColor=if($c -in @($subtitle,$status,$detail,$historyEmpty)){$p.muted}else{$p.text}
+            if($c -eq $historyEmpty){$c.BackColor=$p.raised}else{$c.BackColor=[Drawing.Color]::Transparent}
+        }
+        elseif ($c -is [Windows.Forms.Button] -and $c.Parent -ne $captionButtons) {
+            $c.BackColor=if($c -eq $start){$p.bar}else{$p.button}
+            $c.ForeColor=if($c -eq $start){$p.primaryText}else{$p.text}
+            $c.FlatAppearance.BorderSize=if($p.brick){2}else{1}
+            $c.FlatAppearance.BorderColor=$p.border
+            $c.FlatAppearance.MouseOverBackColor=if($c -eq $start){$p.bar}else{$p.raised}
+            $c.FlatAppearance.MouseDownBackColor=if($c -eq $start){$p.bar}else{$p.selected}
+        }
+        elseif($c -is [Windows.Forms.TextBox] -or $c -is [Windows.Forms.ComboBox] -or $c -is [Windows.Forms.NumericUpDown]){$c.BackColor=$p.raised;$c.ForeColor=$p.text}
         elseif($c -is [Windows.Forms.CheckBox]){$c.BackColor=$p.card;$c.ForeColor=$p.text}
-        elseif($c -is [GobWindow.GobCard]){$c.Surface=$p.card;$c.Stroke=$p.border;$c.Invalidate()}
         elseif($c -is [GobWindow.GobProgressBar]){$c.TrackColor=$p.header;$c.BarColor=$p.bar;$c.Invalidate()}
         elseif($c -is [Windows.Forms.ListView]){$c.BackColor=$p.stripe;$c.ForeColor=$p.text;$c.Invalidate()}
     }
@@ -1105,17 +1171,28 @@ function Show-GobSettings {
     $about=New-Object Windows.Forms.TabPage;$about.Text='About';$tabs.TabPages.Add($about)
     $modeLabel=New-Object Windows.Forms.Label;$modeLabel.Text='Appearance';$modeLabel.Location=[Drawing.Point]::new(20,20);$modeLabel.Size=[Drawing.Size]::new(145,24);$appearance.Controls.Add($modeLabel)
     $mode=New-Object Windows.Forms.ComboBox;$mode.DropDownStyle='DropDownList';[void]$mode.Items.AddRange(@('System','Light','Dark'));$mode.SelectedItem=([string]$script:userSettings.appearance).Substring(0,1).ToUpper()+([string]$script:userSettings.appearance).Substring(1);$mode.Location=[Drawing.Point]::new(180,17);$mode.Size=[Drawing.Size]::new(210,30);$appearance.Controls.Add($mode)
-    $description=New-Object Windows.Forms.Label;$description.Text='Choose a theme, then personalize the accent, surface and text colors.';$description.Location=[Drawing.Point]::new(20,58);$description.Size=[Drawing.Size]::new(500,38);$appearance.Controls.Add($description)
+    $presetLabel=New-Object Windows.Forms.Label
+    $presetLabel.Text='Theme'
+    $presetLabel.Location=[Drawing.Point]::new(20,62)
+    $presetLabel.Size=[Drawing.Size]::new(145,24)
+    $appearance.Controls.Add($presetLabel)
+    $preset=New-Object Windows.Forms.ComboBox
+    $preset.DropDownStyle='DropDownList'
+    [void]$preset.Items.AddRange(@('Brick','GOB Matte'))
+    $preset.SelectedIndex=if($script:userSettings.preset -eq 'brick'){0}else{1}
+    $preset.Location=[Drawing.Point]::new(180,59)
+    $preset.Size=[Drawing.Size]::new(210,30)
+    $appearance.Controls.Add($preset)
     $colorControls=@{}
     $i=0
     foreach($spec in @(@('Accent color','accent'),@('Panel surface','surface'),@('Text color','text'))) {
         $y=112+$i*58;$label=New-Object Windows.Forms.Label;$label.Text=$spec[0];$label.Location=[Drawing.Point]::new(20,$y+7);$label.Size=[Drawing.Size]::new(145,24);$appearance.Controls.Add($label)
         $choose=New-Object Windows.Forms.Button;$choose.Text='Choose color';$choose.Tag=$spec[1];$choose.Location=[Drawing.Point]::new(180,$y);$choose.Size=[Drawing.Size]::new(125,34);$appearance.Controls.Add($choose)
         $value=New-Object Windows.Forms.Label;$value.Text=[string]$script:userSettings[$spec[1]];$value.Location=[Drawing.Point]::new(320,$y+7);$value.Size=[Drawing.Size]::new(150,24);$appearance.Controls.Add($value);$colorControls[$spec[1]]=$value
-        $choose.Add_Click({param($sender,$eventArgs);$key=[string]$sender.Tag;$picker=New-Object Windows.Forms.ColorDialog;$current=[string]$script:userSettings[$key];if($current -match '^#[0-9a-fA-F]{6}$'){$picker.Color=[Drawing.ColorTranslator]::FromHtml($current)};if($picker.ShowDialog($dialog) -eq [Windows.Forms.DialogResult]::OK){$hex='#'+$picker.Color.R.ToString('X2')+$picker.Color.G.ToString('X2')+$picker.Color.B.ToString('X2');$script:userSettings[$key]=$hex;$colorControls[$key].Text=$hex;Apply-GobTheme};$picker.Dispose()}.GetNewClosure())
+        $choose.Add_Click({param($sender,$eventArgs);$key=[string]$sender.Tag;$picker=New-Object Windows.Forms.ColorDialog;$current=[string]$script:userSettings[$key];if($current -match '^#[0-9a-fA-F]{6}$'){$picker.Color=[Drawing.ColorTranslator]::FromHtml($current)};if($picker.ShowDialog($dialog) -eq [Windows.Forms.DialogResult]::OK){$hex='#'+$picker.Color.R.ToString('X2')+$picker.Color.G.ToString('X2')+$picker.Color.B.ToString('X2');$script:userSettings[$key]=$hex;$colorControls[$key].Text=$hex;$preset.SelectedIndex=1;Apply-GobTheme};$picker.Dispose()})
         $i++
     }
-    $appearanceHint=New-Object Windows.Forms.Label;$appearanceHint.Text='GOB Matte keeps the charcoal identity; these controls personalize the active theme.';$appearanceHint.Location=[Drawing.Point]::new(20,294);$appearanceHint.Size=[Drawing.Size]::new(500,42);$appearance.Controls.Add($appearanceHint)
+    $appearanceHint=New-Object Windows.Forms.Label;$appearanceHint.Text='Custom colors apply to GOB Matte.';$appearanceHint.Location=[Drawing.Point]::new(20,294);$appearanceHint.Size=[Drawing.Size]::new(500,42);$appearance.Controls.Add($appearanceHint)
     $sub=New-Object Windows.Forms.CheckBox;$sub.Text='Create a named subfolder for folder downloads';$sub.Checked=[bool]$script:userSettings.folderSubfolder;$sub.Location=[Drawing.Point]::new(20,25);$sub.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($sub)
     $not=New-Object Windows.Forms.CheckBox;$not.Text='Show download notifications';$not.Checked=[bool]$script:userSettings.notifications;$not.Location=[Drawing.Point]::new(20,67);$not.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($not)
     $br=New-Object Windows.Forms.CheckBox;$br.Text='Use Brutal mode by default';$br.Checked=[bool]$script:userSettings.brutal;$br.Location=[Drawing.Point]::new(20,109);$br.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($br)
@@ -1124,13 +1201,17 @@ function Show-GobSettings {
     $dlNote=New-Object Windows.Forms.Label;$dlNote.Text='These are the starting defaults. You can still change options before each transfer.';$dlNote.Location=[Drawing.Point]::new(20,214);$dlNote.Size=[Drawing.Size]::new(500,48);$downloads.Controls.Add($dlNote)
     $aboutText=New-Object Windows.Forms.Label;$aboutText.Text="GOB — Grab Our Bytes`r`nDownload manager for Dropbox and public Google Drive links.`r`nGoogle Drive requires Anyone with the link access; GOB does not sign in.";$aboutText.Location=[Drawing.Point]::new(20,24);$aboutText.Size=[Drawing.Size]::new(500,100);$about.Controls.Add($aboutText)
     $reset=New-Object Windows.Forms.Button;$reset.Text='Reset appearance';$reset.Location=[Drawing.Point]::new(24,394);$reset.Size=[Drawing.Size]::new(130,32);$dialog.Controls.Add($reset)
-    $reset.Add_Click({$script:userSettings.appearance='system';$script:userSettings.accent='#4f86e8';$script:userSettings.surface='';$script:userSettings.text='';$mode.SelectedItem='System';foreach($k in @('accent','surface','text')){$colorControls[$k].Text=[string]$script:userSettings[$k]};Apply-GobTheme})
+    $reset.Add_Click({$script:userSettings.appearance='system';$script:userSettings.preset='brick';$preset.SelectedIndex=0;$script:userSettings.accent='#4f86e8';$script:userSettings.surface='';$script:userSettings.text='';$mode.SelectedItem='System';foreach($k in @('accent','surface','text')){$colorControls[$k].Text=[string]$script:userSettings[$k]};Apply-GobTheme})
     $cancel=New-Object Windows.Forms.Button;$cancel.Text='Cancel';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$cancel.Location=[Drawing.Point]::new(386,394);$cancel.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($cancel)
     $save=New-Object Windows.Forms.Button;$save.Text='Save';$save.Tag='Primary';$save.DialogResult=[Windows.Forms.DialogResult]::OK;$save.Location=[Drawing.Point]::new(478,394);$save.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($save);$dialog.AcceptButton=$save;$dialog.CancelButton=$cancel
     $p=$script:themePalette;$dialog.BackColor=$p.background;$dialog.ForeColor=$p.text;$tabs.BackColor=$p.card;$script:settingsDialog=$dialog
     foreach($page in @($appearance,$downloads,$about)){ $page.BackColor=$p.card;foreach($c in $page.Controls){if($c -is [Windows.Forms.Label]){$c.ForeColor=$p.text;$c.BackColor=[Drawing.Color]::Transparent}elseif($c -is [Windows.Forms.CheckBox]){$c.ForeColor=$p.text;$c.BackColor=$p.card}elseif($c -is [Windows.Forms.ComboBox]){$c.BackColor=$p.raised;$c.ForeColor=$p.text}elseif($c -is [Windows.Forms.Button]){Set-GobButton $c;$c.BackColor=$p.button;$c.ForeColor=$p.text;$c.FlatAppearance.BorderColor=$p.border;$c.FlatAppearance.MouseOverBackColor=$p.raised}} }
     foreach($b in @($reset,$cancel,$save)){Set-GobButton $b ($b -eq $save);$b.BackColor=if($b -eq $save){$p.bar}else{$p.button};$b.ForeColor=if($b -eq $save){[Drawing.Color]::White}else{$p.text};$b.FlatAppearance.BorderColor=$p.border}
-    $mode.Add_SelectedIndexChanged({$script:userSettings.appearance=$mode.SelectedItem.ToString().ToLowerInvariant();Apply-GobTheme}.GetNewClosure())
+    $preset.Add_SelectedIndexChanged({
+        $script:userSettings.preset=if($this.SelectedIndex -eq 0){'brick'}else{'matte'}
+        Apply-GobTheme
+    })
+    $mode.Add_SelectedIndexChanged({$script:userSettings.appearance=$this.SelectedItem.ToString().ToLowerInvariant();Apply-GobTheme})
     if($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK){$script:userSettings.appearance=$mode.SelectedItem.ToString().ToLowerInvariant();$script:userSettings.folderSubfolder=$sub.Checked;$script:userSettings.notifications=$not.Checked;$script:userSettings.brutal=$br.Checked;$script:userSettings.folderOutput=if($out.SelectedIndex -eq 1){'zip'}else{'folder'};$subfolderOption.Checked=$sub.Checked;$notify.Checked=$not.Checked;$brutal.Checked=$br.Checked;$folderOutput.SelectedIndex=$out.SelectedIndex;Save-GobSettings;Update-TransferControls;Apply-GobTheme}
     else { $script:userSettings=$originalSettings; Apply-GobTheme }
     $script:settingsDialog=$null
