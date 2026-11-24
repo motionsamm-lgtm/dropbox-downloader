@@ -66,11 +66,68 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 [hidden] {display:none!important}
 @media(max-width:750px) {.grid {grid-template-columns:1fr} main {padding:19px} header {margin-bottom:17px} h1 {font-size:28px}}
 @media(prefers-reduced-motion:reduce) {button:active:not(:disabled) {transform:none}}
+
+:root[data-preset="brick"] {
+  --bg:#f8f8fa; --card:#fff; --raised:#f7f6fa; --ink:#17171b; --muted:#666672;
+  --line:#1c1c20; --accent:#743bf0; --accent-ink:#fff; --tint:#eee5ff;
+  --success:#187348; --warning:#985d09; --danger:#b52338; --shadow:#18181b;
+}
+:root[data-preset="brick"][data-theme="dark"] {
+  --bg:#17141d; --card:#211d29; --raised:#2a2434; --ink:#fbf9ff; --muted:#c3bacd;
+  --line:#f2eff8; --accent:#a27aff; --accent-ink:#160d25; --tint:#38294e;
+  --success:#82dda9; --warning:#ffd17f; --danger:#ff98a3; --shadow:#07060a;
+}
+[data-preset="brick"] .panel {
+  border:2px solid var(--line); border-radius:19px; box-shadow:0 5px 0 var(--shadow);
+}
+[data-preset="brick"] button,
+[data-preset="brick"] input:not([type=checkbox]),
+[data-preset="brick"] select {
+  border:2px solid var(--line); border-radius:12px; background:var(--card);
+}
+[data-preset="brick"] button {font-weight:760}
+[data-preset="brick"] button.primary {
+  background:var(--accent); color:var(--accent-ink); box-shadow:3px 3px 0 var(--ink);
+}
+[data-preset="brick"] button.primary:active:not(:disabled) {box-shadow:1px 1px 0 var(--ink)}
+[data-preset="brick"] input[type=checkbox] {accent-color:var(--accent)}
+[data-preset="brick"] #jobs {gap:0;border:1px solid var(--line);border-radius:12px}
+.job-columns,.job-progress,.job-started {display:none}
+.update-actions {justify-content:flex-end}
+[data-preset="brick"] .job-columns,[data-preset="brick"] .job {
+  display:grid;grid-template-columns:minmax(0,1.5fr) minmax(70px,1fr) minmax(52px,1fr) minmax(48px,.7fr);
+  gap:6px;padding:8px 10px;
+}
+[data-preset="brick"] .job-columns {color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase}
+[data-preset="brick"] .job {border:0;border-radius:0}
+[data-preset="brick"] .job:focus-visible {outline-offset:-2px}
+[data-preset="brick"] .job-progress {display:grid;gap:2px;color:var(--muted);font-size:10px}
+[data-preset="brick"] .job-progress progress {height:5px}
+[data-preset="brick"] .job-started {display:block;color:var(--muted);font-size:10px}
+[data-preset="brick"] .status {justify-self:start}
+[data-preset="brick"] .section-head p {font-size:12px;margin-top:3px}
+[data-preset="brick"] #jobs li + li {border-top:1px solid var(--line)}
+[data-preset="brick"] .job[aria-pressed=true] {background:var(--tint)}
+[data-preset="brick"] .status {
+  color:var(--accent); background:var(--tint); border:1.5px solid currentColor;
+  border-radius:999px; padding:3px 8px;
+}
+[data-preset="brick"] .status[data-status="Completed"] {color:var(--success)}
+[data-preset="brick"] .status[data-status="Paused"] {color:var(--warning)}
+[data-preset="brick"] .status[data-status="Failed"] {color:var(--danger)}
+[data-preset="brick"] .empty {padding:18px 12px}
+[data-preset="brick"] #transfer {
+  padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--raised);
+}
+[data-preset="brick"] dialog {border:2px solid var(--line);border-radius:19px}
+[data-preset="brick"] .settings-nav button {border:0;background:transparent}
+[data-preset="brick"] .settings-nav button[aria-current="page"] {background:var(--tint)}
+[data-preset="brick"] .preview-card .primary {pointer-events:none}
 </style>
 </head>
 <body>
 <main>
-<header class="toolbar"><div><div class="eyebrow">GOB — Grab Our Bytes for Mac</div><h1>GOB <span class="muted" style="font-size:14px">1.2.0</span></h1><p class="muted">Save a file or download a folder file by file.</p></div><div><button id="openSettings" type="button" aria-haspopup="dialog">Settings</button><button id="updates" type="button">Check for updates</button></div></header>
+<header class="toolbar"><div><div class="eyebrow">GOB — Grab Our Bytes for Mac</div><h1>Transfers <span class="muted" style="font-size:14px">1.2.0</span></h1><p class="muted">Download files and folders. Pick up where you left off.</p></div><div></div></header>
 <p id="notice" role="alert" hidden></p>
 <div class="grid">
   <section class="panel" aria-labelledby="newTitle">
@@ -93,7 +150,8 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
     </form>
   </section>
   <section class="panel" aria-labelledby="historyTitle">
-    <div class="section-head"><h2 id="historyTitle">History</h2><span class="muted" id="count"></span></div>
+    <div class="section-head"><div><h2 id="historyTitle">Downloads</h2><p class="muted" id="count"></p></div><button id="openSettings" type="button" aria-haspopup="dialog">Settings</button></div>
+    <div class="job-columns" aria-hidden="true"><span>Download</span><span>Status</span><span>Progress</span><span>Started</span></div>
     <ul id="jobs"></ul>
     <div id="transfer" hidden>
       <details id="folderFiles" hidden><summary id="folderFilesTitle">Files in this folder</summary><ul id="folderChildren"></ul></details>
@@ -107,6 +165,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
         <button type="button" id="remove">Remove from list…</button><button type="button" id="deleteFiles">Delete files…</button>
       </div>
     </div>
+    <div class="actions update-actions"><button id="updates" type="button">Check for updates</button></div>
   </section>
 </div>
 </main>
@@ -132,7 +191,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
       <section data-panel="appearance">
         <p class="settings-description">Choose how GOB looks. Colors apply to the app interface and are saved on this Mac.</p>
         <div class="setting-row"><div><strong>Appearance</strong><p>Follow macOS or choose a mode.</p></div><select id="prefTheme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
-        <div class="setting-row"><div><strong>Theme</strong><p>Start with GOB Matte or a light surface.</p></div><select id="prefPreset"><option value="matte">GOB Matte</option><option value="paper">Warm Paper</option><option value="custom">Custom colors</option></select></div>
+        <div class="setting-row"><div><strong>Theme</strong><p>Choose Brick, GOB Matte, Warm Paper, or custom colors.</p></div><select id="prefPreset"><option value="brick">Brick</option><option value="matte">GOB Matte</option><option value="paper">Warm Paper</option><option value="custom">Custom colors</option></select></div>
         <div id="customColors" hidden>
           <p class="settings-description">Adjust the main surfaces and text. Keep text and background contrast high for readability.</p>
           <div class="colors-grid">
@@ -179,7 +238,7 @@ const send = message => window.webkit.messageHandlers.downloads.postMessage(mess
 const text = (id, value) => { $(id).textContent = value; };
 let jobs = [], active = null, selected = null, online = false, pending = false, paused = false;
 let dialogJob = null, editLink = false;
-const defaultSettings = {theme:'system',preset:'matte',scale:'1',density:'comfortable',colors:{bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'},subfolder:true,folderOutput:'folder',connections:'4',brutal:true,onePass:false,notifications:true};
+const defaultSettings = {theme:'system',preset:'brick',scale:'1',density:'comfortable',colors:{bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'},subfolder:true,folderOutput:'folder',connections:'4',brutal:true,onePass:false,notifications:true};
 let settings = structuredClone(defaultSettings);
 const bytes = n => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' GiB' :
   n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MiB' : n.toLocaleString() + ' B';
@@ -192,10 +251,15 @@ function notice(message) { text('notice', message); $('notice').hidden = !messag
 function applySettings() {
   const root=document.documentElement;
   root.dataset.theme=settings.theme==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):settings.theme;
+  root.dataset.preset=settings.preset;
   const matte={bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'};
   const paper={bg:'#f3ece5',card:'#fffaf5',raised:'#ece2d8',ink:'#27221f',muted:'#746a62',accent:'#a8542c'};
   const colors=settings.preset==='custom'?settings.colors:settings.preset==='paper'?paper:matte;
-  for(const [key,value] of Object.entries(colors||{})) if(/^#[0-9a-f]{6}$/i.test(value)) root.style.setProperty('--'+key,value);
+  for(const key of Object.keys(defaultSettings.colors)) {
+    const value=colors?.[key];
+    if(settings.preset!=='brick' && /^#[0-9a-f]{6}$/i.test(value)) root.style.setProperty('--'+key,value);
+    else root.style.removeProperty('--'+key);
+  }
   root.style.setProperty('--ui-scale',String(settings.scale||'1'));
   document.body.classList.toggle('compact',settings.density==='compact');
   $('subfolder').checked=settings.subfolder!==false;
@@ -204,12 +268,12 @@ function applySettings() {
   $('brutal').checked=settings.brutal!==false;
   $('onePass').checked=settings.onePass===true;
   $('notifications').checked=settings.notifications!==false;
-  $('prefTheme').value=settings.theme||'system'; $('prefPreset').value=settings.preset||'matte';
+  $('prefTheme').value=settings.theme||'system'; $('prefPreset').value=settings.preset||defaultSettings.preset;
   $('prefScale').value=String(settings.scale||'1'); $('prefDensity').value=settings.density||'comfortable';
   $('prefSubfolder').checked=settings.subfolder!==false; $('prefFolderOutput').value=settings.folderOutput||'folder';
   $('prefConnections').value=String(settings.connections||'4'); $('prefBrutal').checked=settings.brutal!==false;
   $('prefOnePass').checked=settings.onePass===true; $('prefNotifications').checked=settings.notifications!==false;
-  for(const input of document.querySelectorAll('[data-color]')) input.value=colors?.[input.dataset.color]||defaultSettings.colors[input.dataset.color];
+  for(const input of document.querySelectorAll('[data-color]')) input.value=settings.colors?.[input.dataset.color]||defaultSettings.colors[input.dataset.color];
   $('customColors').hidden=settings.preset!=='custom';
   refreshLinkOptions();
 }
@@ -236,7 +300,9 @@ function refreshLinkOptions() {
   $('folderOutput').value=settings.folderOutput==='zip'?'zip':'folder';
 }
 
+const jobProgress = new Map();
 function renderList() {
+  jobProgress.clear();
   const list = $('jobs');
   const focused = list.contains(document.activeElement) ? document.activeElement.dataset.id : null;
   const next = document.createDocumentFragment();
@@ -251,25 +317,51 @@ function renderList() {
     button.setAttribute('aria-pressed', String(selected === job.id));
     const name = document.createElement('span'), state = document.createElement('span');
     name.className = 'name'; name.textContent = job.name;
-    state.className = 'status'; state.textContent = job.status;
-    button.append(name, state);
+    state.className = 'status'; state.dataset.status = job.status; state.textContent = job.status;
+    const progress = document.createElement('span');
+    progress.className = 'job-progress';
+    const bar = document.createElement('progress');
+    bar.max = 100;
+    bar.setAttribute('aria-hidden', 'true');
+    const amount = document.createElement('span');
+    progress.append(bar, amount);
+    const started = document.createElement('time');
+    started.className = 'job-started';
+    const date = new Date(job.created);
+    if (Number.isFinite(date.getTime())) {
+      started.dateTime = date.toISOString();
+      started.textContent = date.toLocaleDateString(undefined, {month:'short',day:'numeric'});
+      started.title = date.toLocaleString();
+    }
+    button.append(name, state, progress, started);
+    jobProgress.set(job.id, {bar, amount});
     button.onclick = () => { selected = job.id; render(); };
     row.append(button); next.append(row);
   }
   list.replaceChildren(next);
   if (focused) [...list.querySelectorAll('button')].find(b => b.dataset.id === focused)?.focus({ preventScroll: true });
 }
+function jobPercentage(job) {
+  const m = job.metrics;
+  return job.status === 'Completed' ? 100 : m?.total > 0 ? Math.min(99.9, Math.floor(1000 * m.done / m.total) / 10) : null;
+}
 let listSignature = '';
 function render() {
   const job = jobs.find(j => j.id === selected);
   const signature = JSON.stringify([selected, jobs.map(j => [j.id, j.name, j.status])]);
   if (signature !== listSignature) { listSignature = signature; renderList(); }
-  text('count', jobs.length ? String(jobs.length) : '');
+  for (const entry of jobs) {
+    const {bar, amount} = jobProgress.get(entry.id);
+    const value = jobPercentage(entry);
+    bar.value = value ?? 0;
+    amount.textContent = value === null ? '—' : value + '%';
+  }
+  text('count', jobs.length ? jobs.length + (jobs.length === 1 ? ' download' : ' downloads') : '');
   $('formStart').disabled = !online || Boolean(active) || pending;
   $('transfer').hidden = !job;
   if (!job) return;
   const done = job.status === 'Completed', m = job.metrics;
-  const percentage = done ? 100 : m?.total > 0 ? Math.min(99.9, Math.floor(1000 * m.done / m.total) / 10) : 0;
+  const percentage = jobPercentage(job) ?? 0;
   text('transferName', job.name);
   $('folderFiles').hidden = job.kind !== 'folder';
   if (job.kind === 'folder') {
@@ -335,9 +427,12 @@ for(const button of document.querySelectorAll('[data-section]')) button.onclick=
   for(const panel of document.querySelectorAll('[data-panel]')) panel.hidden=panel.dataset.panel!==section;
   text('settingsHeading',section[0].toUpperCase()+section.slice(1));
 };
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{
+  if(settings.theme==='system') document.documentElement.dataset.theme=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
+});
 for(const id of ['prefTheme','prefPreset','prefScale','prefDensity','prefSubfolder','prefFolderOutput','prefConnections','prefBrutal','prefOnePass','prefNotifications']) $(id).addEventListener('change',saveSettings);
-for(const input of document.querySelectorAll('[data-color]')) input.addEventListener('input',()=>{settings.preset='custom';$('prefPreset').value='custom';applySettings();saveSettings();});
-$('resetTheme').onclick=()=>{settings={...defaultSettings,colors:{...defaultSettings.colors}};applySettings();saveSettings();};
+for(const input of document.querySelectorAll('[data-color]')) input.addEventListener('input',()=>{saveSettings();});
+$('resetTheme').onclick=()=>{const {theme,preset,scale,density,colors}=structuredClone(defaultSettings);settings={...settings,theme,preset,scale,density,colors};applySettings();saveSettings();};
 $('settingsCheckUpdates').onclick=()=>send({action:updateAvailable?'installUpdate':'checkUpdate'});
 $('link').addEventListener('input',refreshLinkOptions);
 $('browse').onclick = () => send({ action: 'chooseFolder' });
