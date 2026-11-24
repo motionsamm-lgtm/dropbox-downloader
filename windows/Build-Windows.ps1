@@ -99,7 +99,14 @@ while (-not $smoke.HasExited -and (Get-Date) -lt $until) {
     if ($children.Name -contains 'powershell.exe') { $wrongChild = $true }
     Start-Sleep -Milliseconds 150
 }
-if (-not $smoke.HasExited) { Stop-Process -Id $smoke.Id; throw 'GOB GUI did not close after smoke test.' }
+if (-not $smoke.HasExited) {
+    $smoke.Refresh()
+    $smokeTitle = $smoke.MainWindowTitle
+    $smokeLog = Get-Content "$env:LOCALAPPDATA\GOB\startup.log.txt" -ErrorAction SilentlyContinue
+    Stop-Process -Id $smoke.Id
+    if ($smokeLog) { Write-Host ($smokeLog -join [Environment]::NewLine) }
+    throw "GOB GUI did not close after smoke test. Window seen: $seenWindow. Window title: '$smokeTitle'. PowerShell child: $wrongChild."
+}
 $smoke.WaitForExit()
 if ($smoke.ExitCode -or -not $seenWindow -or $wrongChild) {
     Get-Content "$env:LOCALAPPDATA\GOB\startup.log.txt" -ErrorAction SilentlyContinue
