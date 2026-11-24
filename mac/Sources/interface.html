@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light" data-preset="brick">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -238,7 +238,7 @@ const send = message => window.webkit.messageHandlers.downloads.postMessage(mess
 const text = (id, value) => { $(id).textContent = value; };
 let jobs = [], active = null, selected = null, online = false, pending = false, paused = false;
 let dialogJob = null, editLink = false;
-const defaultSettings = {theme:'system',preset:'brick',scale:'1',density:'comfortable',colors:{bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'},subfolder:true,folderOutput:'folder',connections:'4',brutal:true,onePass:false,notifications:true};
+const defaultSettings = {theme:'light',preset:'brick',brickLightDefault:true,scale:'1',density:'comfortable',colors:{bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'},subfolder:true,folderOutput:'folder',connections:'4',brutal:true,onePass:false,notifications:true};
 let settings = structuredClone(defaultSettings);
 const bytes = n => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' GiB' :
   n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MiB' : n.toLocaleString() + ' B';
@@ -390,9 +390,15 @@ function render() {
 }
 window.receive = event => {
   switch (event.type) {
-    case 'settings':
-      settings={...defaultSettings,...(event.settings||{}),colors:{...defaultSettings.colors,...((event.settings||{}).colors||{})}};
+    case 'settings': {
+      const saved = event.settings || {};
+      settings = {...defaultSettings, ...saved, colors:{...defaultSettings.colors,...(saved.colors||{})}};
+      if (!saved.brickLightDefault && settings.preset === 'brick' && settings.theme === 'system') {
+        settings.theme = defaultSettings.theme;
+      }
+      settings.brickLightDefault = true;
       applySettings(); break;
+    }
     case 'update':
       updateAvailable=event.available;
       text('updates',event.available?'Update GOB to '+event.version:'Check for updates');

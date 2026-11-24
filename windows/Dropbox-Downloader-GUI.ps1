@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 $script:settingsPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'GOB\settings.json'
-$script:userSettings = [ordered]@{ appearance='system'; preset='brick'; accent='#4f86e8'; surface=''; text=''; folderSubfolder=$true; notifications=$true; brutal=$true; folderOutput='folder' }
+$script:userSettings = [ordered]@{ appearance='light'; preset='brick'; brickLightDefault=$true; accent='#4f86e8'; surface=''; text=''; folderSubfolder=$true; notifications=$true; brutal=$true; folderOutput='folder' }
 try {
     if ([IO.File]::Exists($script:settingsPath)) {
         $saved = Get-Content -LiteralPath $script:settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -8,9 +8,14 @@ try {
         foreach ($key in @('appearance','preset','accent','surface','text','folderSubfolder','notifications','brutal','folderOutput')) {
             if ($null -ne $saved.$key) { $script:userSettings[$key] = $saved.$key }
         }
+        # Brick previously followed the OS by default. Apply the new default once
+        # for those settings while preserving explicit light, dark and other themes.
+        if (-not $saved.brickLightDefault -and $script:userSettings.preset -eq 'brick' -and $script:userSettings.appearance -eq 'system') {
+            $script:userSettings.appearance = 'light'
+        }
     }
 } catch { Write-Verbose 'Using the default GOB settings.' }
-if($script:userSettings.appearance -notin @('system','light','dark')){$script:userSettings.appearance='system'}
+if($script:userSettings.appearance -notin @('system','light','dark')){$script:userSettings.appearance='light'}
 if($script:userSettings.preset -notin @('brick','matte')){$script:userSettings.preset='brick'}
 if($script:userSettings.folderOutput -notin @('folder','zip')){$script:userSettings.folderOutput='folder'}
 foreach($key in @('accent','surface','text')){if([string]$script:userSettings[$key] -notmatch '^#[0-9a-fA-F]{6}$' -and $key -ne 'accent'){$script:userSettings[$key]=''}}
@@ -1162,7 +1167,10 @@ function Apply-GobTheme {
     }
 }
 function Show-GobSettings {
-    $originalSettings=$script:userSettings.Clone()
+    $originalSettings = [ordered]@{}
+    foreach ($key in $script:userSettings.Keys) {
+        $originalSettings[$key] = $script:userSettings[$key]
+    }
     $dialog=New-Object Windows.Forms.Form
     $dialog.Text='GOB Settings';$dialog.ClientSize=[Drawing.Size]::new(590,450);$dialog.MinimumSize=[Drawing.Size]::new(570,430);$dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
     $tabs=New-Object Windows.Forms.TabControl;$tabs.Location=[Drawing.Point]::new(16,16);$tabs.Size=[Drawing.Size]::new(558,365);$dialog.Controls.Add($tabs)
@@ -1201,7 +1209,7 @@ function Show-GobSettings {
     $dlNote=New-Object Windows.Forms.Label;$dlNote.Text='These are the starting defaults. You can still change options before each transfer.';$dlNote.Location=[Drawing.Point]::new(20,214);$dlNote.Size=[Drawing.Size]::new(500,48);$downloads.Controls.Add($dlNote)
     $aboutText=New-Object Windows.Forms.Label;$aboutText.Text="GOB — Grab Our Bytes`r`nDownload manager for Dropbox and public Google Drive links.`r`nGoogle Drive requires Anyone with the link access; GOB does not sign in.";$aboutText.Location=[Drawing.Point]::new(20,24);$aboutText.Size=[Drawing.Size]::new(500,100);$about.Controls.Add($aboutText)
     $reset=New-Object Windows.Forms.Button;$reset.Text='Reset appearance';$reset.Location=[Drawing.Point]::new(24,394);$reset.Size=[Drawing.Size]::new(130,32);$dialog.Controls.Add($reset)
-    $reset.Add_Click({$script:userSettings.appearance='system';$script:userSettings.preset='brick';$preset.SelectedIndex=0;$script:userSettings.accent='#4f86e8';$script:userSettings.surface='';$script:userSettings.text='';$mode.SelectedItem='System';foreach($k in @('accent','surface','text')){$colorControls[$k].Text=[string]$script:userSettings[$k]};Apply-GobTheme})
+    $reset.Add_Click({$script:userSettings.appearance='light';$script:userSettings.preset='brick';$preset.SelectedIndex=0;$script:userSettings.accent='#4f86e8';$script:userSettings.surface='';$script:userSettings.text='';$mode.SelectedItem='Light';foreach($k in @('accent','surface','text')){$colorControls[$k].Text=[string]$script:userSettings[$k]};Apply-GobTheme})
     $cancel=New-Object Windows.Forms.Button;$cancel.Text='Cancel';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$cancel.Location=[Drawing.Point]::new(386,394);$cancel.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($cancel)
     $save=New-Object Windows.Forms.Button;$save.Text='Save';$save.Tag='Primary';$save.DialogResult=[Windows.Forms.DialogResult]::OK;$save.Location=[Drawing.Point]::new(478,394);$save.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($save);$dialog.AcceptButton=$save;$dialog.CancelButton=$cancel
     $p=$script:themePalette;$dialog.BackColor=$p.background;$dialog.ForeColor=$p.text;$tabs.BackColor=$p.card;$script:settingsDialog=$dialog
@@ -1212,6 +1220,31 @@ function Show-GobSettings {
         Apply-GobTheme
     })
     $mode.Add_SelectedIndexChanged({$script:userSettings.appearance=$this.SelectedItem.ToString().ToLowerInvariant();Apply-GobTheme})
+    if ($GobSmokeTest) {
+        $dialog.Add_Shown({
+            param($sender, $eventArgs)
+            try {
+                $mode.SelectedItem = 'Dark'
+                $preset.SelectedIndex = 1
+                if ($script:userSettings.appearance -ne 'dark' -or $script:userSettings.preset -ne 'matte') {
+                    throw 'Settings did not preview the selected appearance.'
+                }
+                $reset.PerformClick()
+                if ($mode.SelectedItem -ne 'Light' -or $preset.SelectedIndex -ne 0) {
+                    throw 'Reset appearance did not select Brick Light.'
+                }
+                $mode.SelectedItem = 'Dark'
+                $script:settingsSmokeExercised = $true
+            } catch {
+                $global:GobExitCode = 1
+                [IO.File]::AppendAllText((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB\startup.log.txt'),
+                    ('Settings smoke test: ' + $_.ToString() + [Environment]::NewLine))
+            } finally {
+                $sender.DialogResult = [Windows.Forms.DialogResult]::Cancel
+                $sender.Close()
+            }
+        })
+    }
     if($dialog.ShowDialog($form) -eq [Windows.Forms.DialogResult]::OK){$script:userSettings.appearance=$mode.SelectedItem.ToString().ToLowerInvariant();$script:userSettings.folderSubfolder=$sub.Checked;$script:userSettings.notifications=$not.Checked;$script:userSettings.brutal=$br.Checked;$script:userSettings.folderOutput=if($out.SelectedIndex -eq 1){'zip'}else{'folder'};$subfolderOption.Checked=$sub.Checked;$notify.Checked=$not.Checked;$brutal.Checked=$br.Checked;$folderOutput.SelectedIndex=$out.SelectedIndex;Save-GobSettings;Update-TransferControls;Apply-GobTheme}
     else { $script:userSettings=$originalSettings; Apply-GobTheme }
     $script:settingsDialog=$null
@@ -1341,7 +1374,26 @@ try {
     if ($GobSmokeTest) {
         $smokeTimer = New-Object Windows.Forms.Timer
         $smokeTimer.Interval = 700
-        $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close(); [Windows.Forms.Application]::Exit() })
+        $smokeTimer.Add_Tick({
+            $smokeTimer.Stop()
+            try {
+                $appearanceBefore = $script:userSettings.appearance
+                $presetBefore = $script:userSettings.preset
+                $script:settingsSmokeExercised = $false
+                $settingsButton.PerformClick()
+                if (-not $script:settingsSmokeExercised) { throw 'The Settings dialog did not complete its smoke test.' }
+                if ($script:userSettings.appearance -ne $appearanceBefore -or $script:userSettings.preset -ne $presetBefore) {
+                    throw 'Cancel did not restore the saved appearance.'
+                }
+            } catch {
+                $global:GobExitCode = 1
+                [IO.File]::AppendAllText((Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB\startup.log.txt'),
+                    ('Settings smoke test: ' + $_.ToString() + [Environment]::NewLine))
+            } finally {
+                $form.Close()
+                [Windows.Forms.Application]::Exit()
+            }
+        })
         $form.Add_Shown({ $smokeTimer.Start() })
     }
     [void]$form.ShowDialog()
