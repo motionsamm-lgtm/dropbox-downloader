@@ -24,6 +24,14 @@ function Save-GobSettings {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 trap {
+    $startupError = $_.ToString()
+    try {
+        $startupDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB'
+        [void][IO.Directory]::CreateDirectory($startupDirectory)
+        $startupLog = Join-Path $startupDirectory 'startup.log.txt'
+        [IO.File]::AppendAllText($startupLog, ([DateTime]::Now.ToString('o') + ' GUI startup error: ' + $startupError + [Environment]::NewLine))
+    } catch { }
+    if ($GobSmokeTest) { $global:GobExitCode = 1; break }
     [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'GOB could not open')
     break
 }
