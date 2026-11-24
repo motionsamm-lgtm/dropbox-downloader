@@ -952,7 +952,7 @@ $historyEmpty.Visible = $false
 $rightCard.Controls.Add($historyEmpty)
 
 function Move-ToCard([Windows.Forms.Control]$Control, [Windows.Forms.Control]$Container) {
-    $Control.Parent = $Container
+    [void]$Container.Controls.Add($Control)
 }
 $leftControls = @($linkLabel,$linkBox,$paste,$nameLabel,$nameBox,$folderOutputLabel,$folderOutput,$directoryLabel,$directory,$browse,
     $subfolderOption,$notify,$brutal,$connectionsLabel,$connections,$limitLabel,$limit,$onePass,
