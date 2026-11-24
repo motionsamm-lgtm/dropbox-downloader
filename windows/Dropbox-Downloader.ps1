@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Download-Log.ps1')
 . (Join-Path $PSScriptRoot 'Download-History.ps1')
 . (Join-Path $PSScriptRoot 'Download-Notifications.ps1')
+. (Join-Path $PSScriptRoot 'Download-GoogleDrive.ps1')
 . (Join-Path $PSScriptRoot 'Download-Folder.ps1')
 
 function Get-TextHash([string]$Text) {
@@ -44,11 +45,12 @@ function Test-ZipHeader([byte[]]$Bytes) {
             $Bytes[2] -in @(3, 5, 7) -and $Bytes[3] -eq $Bytes[2] + 1)
 }
 
-function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]$FolderZip, [bool]$OnePass = $false) {
+function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]$FolderZip, [bool]$OnePass = $false, [string[]]$Headers=@(), [string]$Provider='Dropbox') {
     $sample = [IO.Path]::GetTempFileName()
     try {
         $lastByte = 4095
         $probeOptions = @()
+        foreach($header in $Headers){$probeOptions+=@('--header',($header -replace '^--header=',''))}
         if ($FolderZip -or $OnePass) { $probeOptions += @('--limit-rate', '16K') }
         $headers = & $Curl --disable @probeOptions --silent --globoff --location --max-redirs 10 --proto '=https' --proto-redir '=https' --max-time 20 --max-filesize 65536 --range "0-$lastByte" --dump-header - --output $sample $Url
         $probeExit = $LASTEXITCODE
@@ -68,7 +70,7 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
                 if ($length.Success) { $size = [long]$length.Groups[1].Value }
                 return @{ Size = $size }
             }
-            return @{ Problem = 'Dropbox did not identify the folder response as a ZIP archive.' }
+            return @{ Problem = "$Provider did not identify the folder response as a ZIP archive." }
         }
         if ($OnePass -and $status -eq '200' -and $probeExit -in @(0, 28, 63)) {
             $length = [regex]::Match($response, '(?im)^Content-Length:[ \t]*(\d+)[ \t]*\r?$')
@@ -81,7 +83,7 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
         if (-not $FolderZip -and -not $OnePass -and $status -eq '200') {
             $zipResponse = $response -match '(?im)^Content-Type:[ \t]*application/(?:x-zip-compressed|zip)' -or
                 $response -match '(?im)^Content-Disposition:[^\r\n]*\bfilename[^\r\n]*\.zip(?:[";\s]|$)'
-            return @{ Problem = 'Dropbox ignored the byte range. Use One pass only if you want a new download from zero.'; ZipResponse = $zipResponse }
+            return @{ Problem = "$Provider ignored the byte range. Use One pass only if you want a new download from zero."; ZipResponse = $zipResponse }
         }
         if ($status -ne '206' -or $probeExit -ne 0) {
             $delay = 0
@@ -99,31 +101,31 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
                     $delay = [int][Math]::Max(1, [Math]::Min(121, $seconds))
                 }
             }
-            $problem = "HTTP $status, curl $probeExit. No usable byte range."
-            if ($delay -gt 120) { $problem += ' Dropbox requested a longer wait. Try again later.' }
+            $problem = if($Provider -eq 'Google Drive' -and $status -eq '403'){'Google Drive denied this file request. Check Anyone with the link access; API quota or key restrictions may also block it.'}else{"$Provider returned HTTP $status, curl $probeExit. No usable byte range."}
+            if ($delay -gt 120) { $problem += " $Provider requested a longer wait. Try again later." }
             return @{ Problem = $problem; RetryDelay = $delay }
         }
         $range = [regex]::Match($response, '(?im)^Content-Range:\s*bytes 0-(\d+)/(\d+)[ \t]*\r?$')
-        if (-not $range.Success) { return @{ Problem = 'Dropbox did not report the byte range and total size.' } }
+        if (-not $range.Success) { return @{ Problem = "$Provider did not report the byte range and total size." } }
         $end = [long]$range.Groups[1].Value
         $size = [long]$range.Groups[2].Value
         if ($end -gt $lastByte -or $end -ge $size -or (Get-Item -LiteralPath $sample).Length -ne $end + 1) {
-            return @{ Problem = 'Dropbox returned an incomplete or invalid byte range.' }
+            return @{ Problem = "$Provider returned an incomplete or invalid byte range." }
         }
         if ($response -match '(?im)^Content-Type:\s*(text/html|application/xhtml\+xml)') {
-            return @{ Problem = 'Dropbox returned a web page.' }
+            return @{ Problem = "$Provider returned a web page." }
         }
         if ($VerifyMp4) {
             $bytes = [IO.File]::ReadAllBytes($sample)
             if (-not (Test-Mp4Header $bytes)) {
                 if (Test-ZipHeader $bytes) {
-                    return @{ Problem = 'Dropbox returned a ZIP archive.' }
+                    return @{ Problem = "$Provider returned a ZIP archive." }
                 }
                 return @{ Problem = 'The returned bytes did not contain a recognizable MP4 header.' }
             }
         }
         if ($FolderZip -and -not (Test-ZipHeader ([IO.File]::ReadAllBytes($sample)))) {
-            return @{ Problem = 'Dropbox did not return ZIP bytes for the folder.' }
+            return @{ Problem = "$Provider did not return ZIP bytes for the folder." }
         }
         if ($FolderZip) { return @{ Size = $size } }
         $tag = [regex]::Match($response, '(?im)^ETag:[ \t]*("[^"\r\n]*")[ \t]*\r?$').Groups[1].Value
@@ -134,23 +136,23 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
 }
 
 
-function Get-FileProbeWithRetry([string]$Curl, [string]$Url, [bool]$VerifyMp4) {
+function Get-FileProbeWithRetry([string]$Curl, [string]$Url, [bool]$VerifyMp4, [string[]]$Headers=@(), [string]$Provider='Dropbox') {
     for ($attempt = 0; $attempt -lt 3; $attempt++) {
-        $probe = Get-DownloadProbe $Curl $Url $VerifyMp4 $false
+        $probe = Get-DownloadProbe $Curl $Url $VerifyMp4 $false $false $Headers $Provider
         if (-not $probe.RetryDelay -or $probe.RetryDelay -gt 120 -or $attempt -eq 2) {
             return $probe
         }
-        Add-ProbeLog $probe.Problem
+        Add-ProbeLog $probe.Problem $Provider
         Add-DownloadLog "Waiting $($probe.RetryDelay) seconds before checking the link again."
         Write-Host ("{0} Checking again in {1}s." -f $probe.Problem, $probe.RetryDelay) -ForegroundColor Yellow
         Wait-DownloadRetry $probe.RetryDelay
     }
 }
 
-function Assert-SameSource($Expected, $Actual) {
+function Assert-SameSource($Expected, $Actual,[string]$Provider='Dropbox') {
     if ($Expected.Size -ne $Actual.Size -or $Expected.Prefix -ne $Actual.Prefix -or
         ($Expected.Tag -and $Actual.Tag -and $Expected.Tag -cne $Actual.Tag)) {
-        throw 'Dropbox is returning a different file. Saved progress was kept. Use a new output name to download the changed file.'
+        throw "$Provider is returning a different file. Saved progress was kept. Use a new output name to download the changed file."
     }
 }
 
@@ -160,18 +162,18 @@ function Assert-ResumePair([string]$Partial, [string]$Control) {
     }
 }
 
-function Get-TransferFailure([int]$Code, [bool]$IsDirect) {
+function Get-TransferFailure([int]$Code, [bool]$IsDirect,[string]$Provider='Dropbox') {
     switch ($Code) {
         7 { return 'Download stopped. Start again with the same link, filename and save folder to resume.' }
-        8 { return 'Dropbox stopped accepting resume requests. Progress was kept. Try the same share link again later.' }
+        8 { return "$Provider stopped accepting resume requests. Progress was kept. Try the same share link again later." }
         9 { return 'The save drive ran out of space. Free space there, then resume with the same settings.' }
         10 { return 'The aria2 checkpoint uses a different piece size. Keep the files together and use the aria2 build that started the download.' }
         13 { return 'A file already exists at the working path. It was kept.' }
         { $_ -in @(3, 4, 24) } {
             if ($IsDirect) {
-                return 'The direct Dropbox address may have expired or lost access. The partial was kept. A different direct address cannot reuse this checkpoint.'
+                return "The direct $Provider address may have expired or lost access. The partial was kept. A different direct address cannot reuse this checkpoint."
             }
-            return 'Dropbox could not find or authorize the file. Check the share link and its download permissions. Any saved progress was kept.'
+            return "$Provider could not find or authorize the file. Check the share link and its download permissions. Any saved progress was kept."
         }
         default {
             return "aria2 stopped with exit code $Code. Any saved progress was kept. Use the same link, filename and save folder to resume."
@@ -229,13 +231,16 @@ try {
     }
     $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
-    Write-Host 'GOB 1.1.4'
+    Write-Host 'GOB 1.2.0'
     $folderZip = $false
     $subfolder = $false
     $brutal = $false
     $onePass = $false
     $checksum = ''
     $speedLimit = 0
+    $provider = 'dropbox'
+    $driveFile = $null
+    $driveHeaders = @()
     $destination = $PSScriptRoot
     if ($JobFile) {
         try {
@@ -259,9 +264,11 @@ try {
             $script:notifyEnabled = $job.Notifications -eq $true
             $script:notifyName = [string]$job.DisplayName
         }
+        $provider = if($job.Provider){[string]$job.Provider}else{Get-DownloadProvider $inputLink}
+        if($script:historyState){$script:historyState.Provider=$provider}
         if ($job.AutoDetect) {
             $kind = Get-DropboxLinkKind $inputLink
-            if (-not $kind) { throw 'The link type could not be detected. Copy a Dropbox file link, the whole shared folder link, or open the MP4 and copy its URL.' }
+            if (-not $kind) { throw 'The link type could not be detected. Paste a Dropbox or Google Drive file or folder share link.' }
             $folderZip = $kind -eq 'Folder'
         }
         $brutal = $job.Brutal -eq $true
@@ -272,49 +279,74 @@ try {
         $speedLimit = [int]$job.SpeedLimit
         if ($speedLimit -lt 0 -or $speedLimit -gt 999) { throw 'Choose a valid speed limit.' }
     } else {
-        $inputLink = (Read-Host 'Paste the Dropbox file link or direct download address').Trim()
+        $inputLink = (Read-Host 'Paste the Dropbox or Google Drive file or folder link').Trim()
+        $provider = Get-DownloadProvider $inputLink
     }
     if ($HistoryAttempt -and $folderZip -and $job.FolderMode -eq 'files') {
         Invoke-FolderDownload $job $inputLink
         exit 0
     }
     $share = $null
-    if (-not [Uri]::TryCreate($inputLink, [UriKind]::Absolute, [ref]$share) -or
-        $share.Scheme -ne 'https' -or $share.UserInfo -or -not $share.IsDefaultPort) {
-        throw 'Paste an HTTPS Dropbox link.'
+    if($provider -eq 'google-drive') {
+        $driveLink=Get-GoogleDriveLinkInfo $inputLink
+        $driveId=if($job.ParentFolder -and $job.DriveFile.Id){[string]$job.DriveFile.Id}else{$driveLink.Id}
+        $driveResourceKey=if($job.ParentFolder -and $job.DriveFile.ResourceKey){[string]$job.DriveFile.ResourceKey}else{$driveLink.ResourceKey}
+        $driveFile=Get-GoogleDriveMetadata $driveId $driveResourceKey
+        if($driveFile.mimeType -eq 'application/vnd.google-apps.folder'){
+            if($HistoryAttempt -and $job.FolderMode -eq 'files'){Invoke-FolderDownload $job $inputLink;exit 0}
+            throw 'Google Drive folders download as individual files. Start from the folder link in the GOB app.'
+        }
+        if($driveFile.mimeType -like 'application/vnd.google-apps.*'){throw 'This is a Google Docs, Sheets or Slides file. Workspace export is not available yet; use a downloadable binary file link.'}
+        if($driveFile.capabilities.canDownload -eq $false){throw 'The owner has disabled downloading for this Google Drive item.'}
+        if(-not $name){$name=[string]$driveFile.name}
+        $request=Get-GoogleDriveMediaRequest $driveFile
+        $share=[Uri]$request.Url
+        $driveHeaders=@($request.Headers)
+        $isDirect=$true
+        $isSharedFolderVideo=$false
+        $modes=@('Google Drive media')
+    } else {
+        if (-not [Uri]::TryCreate($inputLink, [UriKind]::Absolute, [ref]$share) -or
+            $share.Scheme -ne 'https' -or $share.UserInfo -or -not $share.IsDefaultPort) {
+            throw 'Paste a valid HTTPS Dropbox or Google Drive link.'
+        }
+        $isDirect = $share.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$'
+        $isSharedFolderVideo = $share.AbsolutePath -match '^/(?:scl/fo|sh)/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$'
     }
-    $isDirect = $share.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$'
-    $isSharedFolderVideo = $share.AbsolutePath -match '^/(?:scl/fo|sh)/[^/]+/[^/]+/(?:[^/]+/)*[^/]+$'
-    if ($folderZip) {
+    if ($provider -eq 'dropbox' -and $folderZip) {
         if ($share.Host -notin @('dropbox.com', 'www.dropbox.com') -or
             $share.AbsolutePath -notmatch '^/(scl/fo|sh)/[^/]+/[^/]+/?$') {
             throw 'In Folder ZIP mode, paste the Dropbox link to the whole shared folder.'
         }
-    } elseif (-not $isDirect) {
+    } elseif ($provider -eq 'dropbox' -and -not $isDirect) {
         if ($share.Host -notin @('dropbox.com', 'www.dropbox.com') -or
             (-not $isSharedFolderVideo -and $share.AbsolutePath -notmatch '^/(scl/fi|s)/[^/]+/[^/]+$')) {
             throw 'Open the MP4 inside the shared folder and copy its URL, or paste a Dropbox file share link.'
         }
     }
     $verifyMp4 = $share.AbsolutePath -match '\.mp4$' -or $name -match '\.mp4$'
-    $modes = @('dl=1')
-    if ($isSharedFolderVideo) { $modes += 'raw=1' }
-    if ($isDirect) {
-        $modes = @('direct address')
-    } else {
+    if($provider -eq 'dropbox') {
+      $modes = @('dl=1')
+      if ($isSharedFolderVideo) { $modes += 'raw=1' }
+      if ($isDirect) {
+          $modes = @('direct address')
+      } else {
         $direct = [UriBuilder]::new($share)
         $direct.Fragment = ''
         $query = $share.Query.TrimStart('?').Split('&') | Where-Object {
             $_ -and $_ -notmatch '^(dl|raw)(=|$)'
         }
+      }
     }
 
-    $sourceKey = Get-TextHash $share.AbsoluteUri
-    if (-not $isDirect) {
+    $sourceKey = if($provider -eq 'google-drive'){Get-TextHash ('google-drive:{0}:{1}' -f $driveId,$driveResourceKey)}else{Get-TextHash $share.AbsoluteUri}
+    if ($provider -eq 'dropbox' -and -not $isDirect) {
         $stableQuery = $query | Where-Object { $_ -notmatch '^st(=|$)' }
         $sourceKey = Get-TextHash ($share.GetLeftPart([UriPartial]::Path) + '?' + ($stableQuery -join '&'))
     }
     $streamOnly = $folderZip -or $onePass
+    $providerName = if($provider -eq 'google-drive'){'Google Drive'}else{'Dropbox'}
+    if($script:historyState){$script:historyState.Provider=$provider}
 
     if (-not $JobFile) {
         $name = (Read-Host 'Output filename [Podcast-19.mp4]').Trim()
@@ -371,7 +403,7 @@ try {
         if (-not $locked) { throw 'Another instance is downloading to this filename.' }
         if ($HistoryAttempt) {
             $script:historyState.Output = $target
-            Update-HistoryState 'Running' 'Checking the Dropbox link and save folder.'
+            Update-HistoryState 'Running' "Checking the $providerName link and save folder."
         } else {
             Start-DownloadLog (Join-Path $destination "$name.$($sourceKey.Substring(0, 16)).log.txt")
         }
@@ -386,7 +418,7 @@ try {
             return
         }
 
-        $script:downloadStage = 'Checking the Dropbox link'
+        $script:downloadStage = "Checking the $providerName link"
         if (Test-Path -LiteralPath $target) {
             throw 'That output already exists. Choose a different output filename.'
         }
@@ -399,12 +431,13 @@ try {
                 $direct.Query = (@($query) + $mode) -join '&'
                 $url = $direct.Uri.AbsoluteUri
             }
-            Write-Host "Checking Dropbox response ($mode)..."
+            Write-Host "Checking $providerName response ($mode)..."
             if ($streamOnly) {
-                $probe = Get-DownloadProbe $curl $url $verifyMp4 $folderZip $onePass
+                $probe = Get-DownloadProbe $curl $url $verifyMp4 $folderZip $onePass $driveHeaders $providerName
             } else {
-                $probe = Get-FileProbeWithRetry $curl $url $verifyMp4
+                $probe = Get-FileProbeWithRetry $curl $url $verifyMp4 $driveHeaders $providerName
             }
+            if($provider -eq 'google-drive' -and $driveFile.md5Checksum){$probe.Tag='"'+([string]$driveFile.md5Checksum).ToLowerInvariant()+'"'}
             if (-not $probe.Problem) {
                 $size = $probe.Size
                 break
@@ -414,26 +447,27 @@ try {
                     throw 'Dropbox returned a folder ZIP. Paste the whole folder share link so GOB can list its files instead.'
                 }
                 if ($isSharedFolderVideo -and $mode -ne 'raw=1') { continue }
-                $probe = Get-DownloadProbe $curl $url $verifyMp4 $false $true
+                $probe = Get-DownloadProbe $curl $url $verifyMp4 $false $true $driveHeaders $providerName
                 if (-not $probe.Problem) {
                     $streamOnly = $true
                     $onePass = $true
                     $connections = '1'
                     $size = $probe.Size
-                    Add-DownloadLog 'Dropbox ignored ranges. Using a new one-stream partial. Existing checkpoints were kept.'
+                    Add-DownloadLog "$providerName ignored ranges. Using a new one-stream partial. Existing checkpoints were kept."
                     break
                 }
             }
-            Add-ProbeLog $probe.Problem
+            Add-ProbeLog $probe.Problem $providerName
             Write-Host $probe.Problem -ForegroundColor Yellow
             if ($probe.RetryDelay) { break }
         }
         if ($null -eq $size) {
-            if ($folderZip) { throw 'No download started. Check that Dropbox can download this shared folder as a ZIP.' }
+            if ($folderZip) { throw "No download started. Check that $providerName can download this shared folder as a ZIP." }
             throw 'No download started. Any saved progress was kept. Check the link in your browser and retry with the same download settings.'
         }
         if ($job.ParentFolder -eq $true -and [long]$job.ExpectedSize -ne $size) { throw 'This folder file changed size after listing. Saved files were kept. Download the changed folder under a new name.' }
-        if ($size -gt 0) { Add-DownloadLog ("Dropbox reported a file size of {0:N2} GiB." -f ($size / 1GB)) }
+        if ($provider -eq 'google-drive' -and [long]$driveFile.size -ne [long]$size){throw 'Google Drive returned a different file size than its metadata. Saved files were kept.'}
+        if ($size -gt 0) { Add-DownloadLog ("$providerName reported a file size of {0:N2} GiB." -f ($size / 1GB)) }
         $script:downloadStage = 'Preparing the saved checkpoint and destination'
         $identity = Get-TextHash "$url|${size}"
         $partialName = "$name.$($identity.Substring(0, 16)).part"
@@ -445,7 +479,7 @@ try {
             $refreshed = Find-RefreshedPartial $destination $name $sourceKey $probe
             if ($refreshed) {
                 $partialName = $refreshed
-                Write-Host 'Resuming from a checkpoint that matches this refreshed Dropbox link.'
+                Write-Host "Resuming from a checkpoint that matches this refreshed $providerName link."
             }
         }
         $partial = Join-Path $destination $partialName
@@ -464,7 +498,7 @@ try {
         if (-not $streamOnly) {
             if ($hasCheckpoint -and (Test-Path -LiteralPath $sourceState -PathType Leaf)) {
                 $savedProbe = Get-Content -LiteralPath $sourceState -Raw -Encoding UTF8 | ConvertFrom-Json
-                Assert-SameSource $savedProbe $probe
+                Assert-SameSource $savedProbe $probe $providerName
             } else {
                 $savedProbe = $probe
             }
@@ -482,7 +516,7 @@ try {
         } elseif ($onePass) {
             Write-Host 'One pass: starting from byte zero in a separate partial. Existing checkpoints stay available.'
         } else {
-            Write-Host ("Dropbox confirmed byte ranges. File size: {0:N2} GiB." -f ($size / 1GB))
+            Write-Host ("$providerName confirmed byte ranges. File size: {0:N2} GiB." -f ($size / 1GB))
             Write-Host 'To resume later, use the same link, output filename and save folder.'
         }
         if ($brutal) { Write-Host "Brutal mode: up to $connections connection(s), no speed cap." }
@@ -506,6 +540,7 @@ try {
             $options += @('--continue=false', '--always-resume=false')
         }
         if ($JobFile) { $options += '--console-log-level=warn' }
+        $options += $driveHeaders
         $currentConnections = [int]$connections
         $recoverable = @(2, 5, 6, 8, 19, 22, 23, 29)
         if (-not $isDirect) { $recoverable += @(3, 4, 24) }
@@ -534,7 +569,7 @@ try {
             if ($script:summaryPath) {
                 try {
                     $nativeLog = [IO.Path]::GetTempFileName()
-                    $transferOptions += @("--log=$nativeLog", '--log-level=warn')
+                $transferOptions += @("--log=$nativeLog", '--log-level=warn')
                 } catch {
                     Add-DownloadLog 'Detailed connection logging was unavailable.'
                 }
@@ -549,7 +584,7 @@ try {
                     $downloadExit = $LASTEXITCODE
                 }
             } finally {
-                Add-TransferLog $nativeLog
+                Add-TransferLog $nativeLog $providerName
                 if ($nativeLog) { Remove-Item -LiteralPath $nativeLog -ErrorAction SilentlyContinue }
             }
             $completeCheckpoint = Test-CompleteCheckpoint $control $size
@@ -567,7 +602,7 @@ try {
             Add-DownloadLog "$(Get-ExitMeaning $downloadExit) (aria2 code $downloadExit)"
             if ($streamOnly) { throw "One-stream download stopped with aria2 exit code $downloadExit. Its partial was kept. A new one-pass attempt starts from zero." }
             if ($downloadExit -notin $recoverable -or $attempt -eq 5) {
-                throw (Get-TransferFailure $downloadExit $isDirect)
+                throw (Get-TransferFailure $downloadExit $isDirect $providerName)
             }
 
             Assert-ResumePair $partial $control
@@ -591,12 +626,13 @@ try {
             }
             Update-HistoryState 'Running' $retryMessage
             Wait-DownloadRetry $delay
-            $freshProbe = Get-FileProbeWithRetry $curl $url $verifyMp4
+            $freshProbe = Get-FileProbeWithRetry $curl $url $verifyMp4 $driveHeaders $providerName
+            if($provider -eq 'google-drive' -and $driveFile.md5Checksum){$freshProbe.Tag='"'+([string]$driveFile.md5Checksum).ToLowerInvariant()+'"'}
             if ($freshProbe.Problem) {
-                Add-ProbeLog $freshProbe.Problem
-                throw "Dropbox could not reopen the link. $($freshProbe.Problem) Any saved progress was kept."
+                Add-ProbeLog $freshProbe.Problem $providerName
+                throw "$providerName could not reopen the link. $($freshProbe.Problem) Any saved progress was kept."
             }
-            Assert-SameSource $savedProbe $freshProbe
+            Assert-SameSource $savedProbe $freshProbe $providerName
         }
         $script:downloadStage = 'Confirming that all bytes arrived'
         if (-not (Test-Path -LiteralPath $partial -PathType Leaf) -or
@@ -615,6 +651,8 @@ try {
             Prefix = $probe.Prefix
             SampleLength = $probe.SampleLength
             Checksum = $checksum
+            DriveMd5 = if($provider -eq 'google-drive'){[string]$driveFile.md5Checksum}else{''}
+            Provider = $provider
             CompleteCheckpoint = $completeCheckpoint
         }
         Complete-SavedDownload $target $readyMarker $sourceKey $checksum
@@ -643,7 +681,7 @@ try {
         'Download stopped\.' { 'Stopped before completion. Use the same settings to resume.'; break }
         default { "Stopped during: $script:downloadStage. See the preceding entries for details." }
     }
-    $diagnostic = [regex]::Replace($failure, '(?i)https?://[^\s]+', '[Dropbox link]')
+    $diagnostic = [regex]::Replace($failure, '(?i)https?://[^\s]+', '[share link]')
     $diagnostic = [regex]::Replace($diagnostic, '(?i)\b[A-Z]:\\[^\r\n]*', '[local path omitted]')
     Add-DownloadLog ("Reason: " + $diagnostic)
     Finish-DownloadLog $safeReason

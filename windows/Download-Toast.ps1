@@ -15,25 +15,33 @@ public class QuietDownloadToast : System.Windows.Forms.Form {
 }
 '@
 $eventData = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Data)) | ConvertFrom-Json
+$pref=@{}
+try {$pref=Get-Content -LiteralPath (Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'GOB\settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json} catch {}
+$dark=[string]$pref.appearance -eq 'dark'
+if([string]$pref.appearance -eq 'system'){try{$dark=(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -ErrorAction Stop).AppsUseLightTheme -eq 0}catch{}}
+$toastSurface=if($dark){[Drawing.Color]::FromArgb(24,25,28)}else{[Drawing.Color]::FromArgb(250,250,252)}
+$toastText=if($dark){[Drawing.Color]::FromArgb(240,240,243)}else{[Drawing.Color]::FromArgb(35,37,42)}
+$toastAccent=if([string]$pref.accent -match '^#[0-9a-fA-F]{6}$'){[Drawing.ColorTranslator]::FromHtml([string]$pref.accent)}elseif($dark){[Drawing.Color]::FromArgb(145,182,255)}else{[Drawing.Color]::FromArgb(46,105,211)}
 $toast = New-Object QuietDownloadToast
 $toast.ShowInTaskbar = $false
 $toast.FormBorderStyle = 'None'
 $toast.TopMost = $true
 $toast.StartPosition = 'Manual'
-$toast.BackColor = [Drawing.Color]::FromArgb(245,247,251)
-$toast.ForeColor = [Drawing.Color]::FromArgb(32,43,63)
+$toast.BackColor = $toastSurface
+$toast.ForeColor = $toastText
 $toast.ClientSize = [Drawing.Size]::new(358,122)
 $area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $toast.Location = [Drawing.Point]::new(($area.Right-376),($area.Bottom-140))
 
 $accent = New-Object Windows.Forms.Panel
-$accent.BackColor = [Drawing.Color]::FromArgb(0,87,219)
+$accent.BackColor = $toastAccent
 $accent.Dock = 'Left'
 $accent.Width = 6
 $toast.Controls.Add($accent)
 $title = New-Object Windows.Forms.Label
 $title.Text = 'Download ' + ([string]$eventData.Kind).ToLowerInvariant()
 $title.Font = [Drawing.Font]::new('Segoe UI Semibold',12)
+$title.ForeColor = $toastText
 $title.Location = [Drawing.Point]::new(18,11)
 $title.Size = [Drawing.Size]::new(320,25)
 $toast.Controls.Add($title)
@@ -43,12 +51,14 @@ $file.AutoEllipsis = $true
 $file.Location = [Drawing.Point]::new(19,39)
 $file.Size = [Drawing.Size]::new(320,21)
 $file.Font = [Drawing.Font]::new('Segoe UI',10)
+$file.ForeColor = $toastText
 $toast.Controls.Add($file)
 $detail = New-Object Windows.Forms.Label
 $detail.Text = if ($eventData.Detail) { [string]$eventData.Detail } else { 'Open Dropbox Downloader to follow progress.' }
 $detail.Location = [Drawing.Point]::new(19,65)
 $detail.Size = [Drawing.Size]::new(320,44)
 $detail.Font = [Drawing.Font]::new('Segoe UI',9)
+$detail.ForeColor = $toastText
 $toast.Controls.Add($detail)
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 4500

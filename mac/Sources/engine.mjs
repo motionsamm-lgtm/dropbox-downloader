@@ -4,6 +4,7 @@ import { createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import {discoverFolder} from './dropbox-folder.mjs';
+import {createDriveClient, discoverGoogleDriveFolder, driveTransferRequest, GoogleDriveError, isGoogleDriveLink, parseGoogleDriveLink} from './google-drive.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const MiB = 1024 ** 2;
@@ -128,19 +129,25 @@ function allowedRedirect(u) {
     /(?:^|\.)(?:dropbox\.com|dropboxusercontent\.com)$/.test(u.hostname);
 }
 
+function allowedDriveRedirect(u) {
+  return u.protocol === 'https:' && !u.username && !u.password && !u.port &&
+    (/(?:^|\.)(?:googleapis\.com|googleusercontent\.com)$/.test(u.hostname) ||
+      u.hostname === 'drive.usercontent.google.com');
+}
+
 export function retryWait(value, now = Date.now()) {
   if (!value) return 0;
   const seconds = /^\d+$/.test(value) ? Number(value) : Math.ceil((Date.parse(value) - now) / 1000);
   return Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
 }
 
-export async function probe(url, folder, onePass, signal, request = fetch, allow = allowedRedirect) {
+export async function probe(url, folder, onePass, signal, request = fetch, allow = allowedRedirect, extraHeaders = {}, provider = 'Dropbox') {
   const timeout = AbortSignal.any([signal, AbortSignal.timeout(25000)]);
   let current = new URL(url);
   for (let hop = 0; hop <= 10; hop++) {
-    if (!allow(current)) throw new DownloadError('Dropbox redirected outside its download hosts.');
+    if (!allow(current)) throw new DownloadError('The share link redirected outside its verified download hosts.');
     const response = await request(current, {
-      redirect: 'manual', signal: timeout, headers: { Range: 'bytes=0-4095', 'Accept-Encoding': 'identity' }
+      redirect: 'manual', signal: timeout, headers: { Range: 'bytes=0-4095', 'Accept-Encoding': 'identity', ...extraHeaders }
     });
     const code = response.status;
     if (code === 416 && response.headers.get('content-range')?.trim() === 'bytes */0') {
@@ -150,25 +157,30 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
     if ([301, 302, 303, 307, 308].includes(code)) {
       const location = response.headers.get('location');
       await response.body?.cancel();
-      if (!location) throw new DownloadError('Dropbox returned a redirect with no address.');
+      if (!location) throw new DownloadError(`${provider} returned a redirect with no address.`);
       current = new URL(location, current);
       continue;
     }
     if (![200, 206].includes(code)) {
       const wait = retryWait(response.headers.get('retry-after'));
       await response.body?.cancel();
-      throw new DownloadError(`Dropbox returned HTTP ${code} while checking the link.`, code, wait);
+      const reason = provider === 'Google Drive' && code === 403
+        ? 'Google Drive denied the file request. Check that Anyone with the link can download it; API quota or key restrictions may also block access.'
+        : provider === 'Google Drive' && code === 404
+          ? 'Google Drive could not find this file or its owner removed access.'
+          : `${provider} returned HTTP ${code} while checking the link.`;
+      throw new DownloadError(reason, code, wait);
     }
     if (code === 200 && !folder && !onePass) {
       const zipResponse = /application\/(?:x-zip-compressed|zip)/i.test(response.headers.get('content-type') || '') ||
         /filename[^\r\n]*\.zip(?:[";\s]|$)/i.test(response.headers.get('content-disposition') || '');
       await response.body?.cancel();
-      throw Object.assign(new DownloadError('Dropbox did not accept a byte-range request.', 200), {zipResponse});
+      throw Object.assign(new DownloadError(`${provider} did not accept a byte-range request.`, 200), {zipResponse});
     }
     if (response.headers.get('content-encoding') &&
         response.headers.get('content-encoding') !== 'identity') {
       await response.body?.cancel();
-      throw new DownloadError('Dropbox returned encoded bytes. The download could not be verified.');
+      throw new DownloadError(`${provider} returned encoded bytes. The download could not be verified.`);
     }
     const type = response.headers.get('content-type') || '';
     const range = response.headers.get('content-range')?.match(/^bytes 0-(\d+)\/(\d+)$/i);
@@ -178,7 +190,7 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
         (code === 206 && (!Number.isSafeInteger(total) || !Number.isSafeInteger(sampleSize) || sampleSize < 1 || sampleSize > 4096 || sampleSize > total)) ||
         (code === 200 && !folder && (!Number.isSafeInteger(total) || total <= 0))) {
       await response.body?.cancel();
-      throw new DownloadError('Dropbox did not return a verifiable file.');
+      throw new DownloadError(`${provider} did not return a verifiable file.`);
     }
     const reader = response.body.getReader();
     let count = 0;
@@ -194,7 +206,7 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
     } finally { await reader.cancel().catch(() => {}); }
     const prefix = Buffer.concat(chunks);
     if ((code === 206 && count !== sampleSize) || count === 0) {
-      throw new DownloadError('Dropbox returned an incomplete file sample.');
+      throw new DownloadError(`${provider} returned an incomplete file sample.`);
     }
     if (folder && !['504b0304', '504b0506', '504b0708'].includes(prefix.subarray(0, 4).toString('hex'))) {
       throw new DownloadError('Dropbox did not return a ZIP for this folder link.');
@@ -202,7 +214,7 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
     const tag = response.headers.get('etag') || '';
     return { total: total || 0, prefix: hash(prefix), count, tag: /^"[^"]+"$/.test(tag) ? tag : '' };
   }
-  throw new DownloadError('Dropbox redirected too many times.');
+  throw new DownloadError('The share link redirected too many times.');
 }
 
 export function assertSameSource(previous, next) {
@@ -256,8 +268,12 @@ const pauseText = 'Paused. Use Resume to continue.';
 const missingPair = 'A partial or its checkpoint is missing. The saved files were kept.';
 
 export class Downloader {
-  constructor({ root, aria, publish, emit, inspect = probe, execute = runProcess, sleep = delay, discover = discoverFolder, version = 'GOB' }) {
-    Object.assign(this, { root, aria, publish, emit, inspect, execute, sleep, discover, version });
+  constructor({ root, aria, publish, emit, inspect = probe, execute = runProcess, sleep = delay, discover = discoverFolder, driveApiKey = process.env.GOB_DRIVE_API_KEY || '', driveClient = null, archiveFolder, verifyArchive, version = 'GOB' }) {
+    Object.assign(this, { root, aria, publish, emit, inspect, execute, sleep, discover, driveApiKey, driveClient, version });
+    // Archive the folder's contents so the ZIP has the same relative paths as
+    // the normal folder output, without exposing the internal "Files" staging name.
+    this.archiveFolder = archiveFolder || ((folder, archive, signal) => runProcess('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', folder, archive], signal));
+    this.verifyArchive = verifyArchive || ((archive, signal) => runProcess('/usr/bin/unzip', ['-tqq', archive], signal));
     this.jobs = new Map();
     this.active = null;
   }
@@ -296,7 +312,7 @@ export class Downloader {
   }
 
   async log(job, message) {
-    message = message.replace(/https?:\/\/\S+/g,'[Dropbox link]').replace(/'\/[^']*'/g,"'[local path omitted]'");
+    message = message.replace(/https?:\/\/\S+/g,'[share link]').replace(/'\/[^']*'/g,"'[local path omitted]'");
     try {
       await fs.appendFile(this.jobPath(job, 'download.log.txt'), `[${iso()}] ${message}\n`, { mode: 0o600 });
     } catch {
@@ -315,8 +331,25 @@ export class Downloader {
 
   async start(input) {
     if (this.active) throw new DownloadError('Pause or finish the current download first.');
-    const link = parseLink(input.link);
-    let chosenName = input.name?.trim() || (link.folder ? 'Dropbox folder' : link.name);
+    const drive = isGoogleDriveLink(input.link);
+    let link, driveFile = null;
+    if (drive) {
+      const parsed = parseGoogleDriveLink(input.link);
+      const client = this.createDriveClient();
+      driveFile = await client.metadata(parsed.id, parsed.resourceKey);
+      const isFolder = driveFile.mimeType === 'application/vnd.google-apps.folder';
+      if (parsed.folder !== isFolder) throw new DownloadError(parsed.folder ? 'This Google Drive link does not point to a folder.' : 'This Google Drive link points to a folder.');
+      if (!isFolder && driveFile.mimeType.startsWith('application/vnd.google-apps.')) {
+        throw new DownloadError('This is a Google Docs, Sheets, or Slides file. Workspace export is not available yet; use a downloadable binary file link.');
+      }
+      if (!isFolder && (!Number.isSafeInteger(Number(driveFile.size)) || Number(driveFile.size) < 0)) throw new DownloadError('Google Drive did not provide a reliable file size for this binary file.');
+      if (!isFolder && driveFile.capabilities?.canDownload === false) throw new DownloadError('The owner has disabled downloading for this Google Drive item.');
+      link = {provider:'google-drive', original:parsed.original, folder:isFolder, name:driveFile.name, key:parsed.identity, drive:parsed};
+    } else {
+      link = parseLink(input.link);
+      link.provider = 'dropbox';
+    }
+    let chosenName = input.name?.trim() || (link.folder ? `${drive ? 'Google Drive' : 'Dropbox'} folder` : link.name);
     const sourceExtension = path.extname(link.name);
     if (!link.folder && !path.extname(chosenName) && sourceExtension) chosenName += sourceExtension;
     const name = cleanName(chosenName, false);
@@ -334,13 +367,33 @@ export class Downloader {
       await fs.mkdir(destination).catch(e => { if (e.code !== 'EEXIST') throw e; });
     }
     if (!(await fileInfo(destination))?.isDirectory()) throw new DownloadError('Choose an available save folder.');
-    const target = path.join(destination, name);
-    if (await fileInfo(target)) throw new DownloadError('A file already exists at that destination. Choose a different name.');
+    const folderOutput = link.folder && input.folderOutput === 'zip' ? 'zip' : 'folder';
+    const outputName = link.folder && folderOutput === 'zip' && !/\.zip$/i.test(name) ? `${name}.zip` : name;
+    let createdFilenameSubfolder = false;
+    if (link.folder && folderOutput === 'zip' && input.subfolder) {
+      const subfolder = path.join(destination, path.parse(outputName).name);
+      if (await fileInfo(subfolder)) throw new DownloadError('The filename subfolder already exists. Choose a new name or turn off Create filename subfolder.');
+      destination = subfolder;
+      createdFilenameSubfolder = true;
+    }
+    const target = path.join(destination, outputName);
+    const folderRoot = link.folder && folderOutput === 'zip'
+      ? path.join(destination, createdFilenameSubfolder ? 'Files' : path.parse(outputName).name)
+      : target;
+    if (await fileInfo(target) || (folderRoot !== target && await fileInfo(folderRoot))) throw new DownloadError('A file or folder already exists at that destination. Choose a different name.');
     const activeTarget = [...this.jobs.values()].find(j => j.status !== 'Completed' && j.target === target);
     if (activeTarget && !input.onePass) throw new DownloadError('This destination already has a History entry. Select it and use Resume.');
+    if (createdFilenameSubfolder) {
+      await fs.mkdir(destination).catch(() => { throw new DownloadError('Could not create the filename subfolder. Check the save location.'); });
+      destination = await fs.realpath(destination);
+    }
     const id = randomUUID();
     const job = {
-      id, name, destination, target, link: link.original, folder: link.folder, kind: link.folder ? 'folder' : 'file',
+      id, name:outputName, destination, target, folderRoot, folderOutput, createdFilenameSubfolder, link: link.original, provider:link.provider, driveFile:drive && !link.folder ? {
+        id:driveFile.id, name:driveFile.name, mimeType:driveFile.mimeType, size:Number(driveFile.size),
+        md5Checksum:driveFile.md5Checksum||'', resourceKey:driveFile.resourceKey||link.drive.resourceKey||''
+      } : undefined, driveRoot:drive && link.folder ? {id:driveFile.id, resourceKey:driveFile.resourceKey||link.drive.resourceKey||''} : undefined,
+      folder: link.folder, kind: link.folder ? 'folder' : 'file',
       onePass: !link.folder && Boolean(input.onePass), brutal: Boolean(input.brutal),
       notifications: Boolean(input.notifications), checksum, created: iso(), status: 'Queued',
       speedCap: Math.min(999, Math.max(0, Math.floor(Number(input.speedCap) || 0))),
@@ -350,6 +403,11 @@ export class Downloader {
     await this.save(job);
     this.jobs.set(id, job);
     this.launch(job);
+  }
+
+  createDriveClient() {
+    if (!this.driveClient) this.driveClient = createDriveClient({apiKey:this.driveApiKey});
+    return this.driveClient;
   }
 
   launch(job, newLink = null, restart = false) {
@@ -404,10 +462,17 @@ export class Downloader {
           files.push(child.target);
         }
       }
+      if (job.kind === 'folder' && job.folderOutput === 'zip') {
+        const archive = await fileInfo(job.target);
+        if (archive && this.matchesFinished({ready:job.archiveReady}, archive)) files.push(job.target);
+      }
       // Resolve every parent before moving anything. Never follow a replaced
       // save-folder symlink or recursively remove a user's destination folder.
       for (const file of files) {
-        const within = job.kind === 'folder' ? file.startsWith(job.target + path.sep) : path.dirname(file) === job.destination;
+        const fileRoot = job.folderRoot || job.target;
+        const within = job.kind === 'folder'
+          ? file === job.target && job.folderOutput === 'zip' ? path.dirname(file) === job.destination : file.startsWith(fileRoot + path.sep)
+          : path.dirname(file) === job.destination;
         if (!within || (await fs.realpath(path.dirname(file))).normalize('NFC') !== path.dirname(file).normalize('NFC') ||
             !(await fileInfo(file))?.isFile()) {
           throw new DownloadError('A saved path changed. No deletion started; inspect the saved-data folder.');
@@ -440,32 +505,182 @@ export class Downloader {
       const child = JSON.parse(await fs.readFile(path.join(root,entry.id,'job.json'),'utf8'));
       if (typeof entry.local !== 'string' || entry.local.split('/').some(p=>!p||p==='.'||p==='..'||p.includes('\\')))
         throw new DownloadError('The saved folder manifest contains an unsafe path.');
-      if (child.id !== entry.id || child.target !== path.join(job.target,...entry.local.split('/'))) throw new DownloadError('The saved folder paths changed. Files were kept.');
+      if (child.id !== entry.id || child.target !== path.join(job.folderRoot || job.target,...entry.local.split('/'))) throw new DownloadError('The saved folder paths changed. Files were kept.');
       children.push(child);
     }
     return children;
   }
 
+  async validateFolderStage(job, children) {
+    const root = job.folderRoot || job.target;
+    const rootInfo = await fileInfo(root);
+    if (!rootInfo?.isDirectory() || rootInfo.isSymbolicLink() || (await fs.realpath(root)).normalize('NFC') !== root.normalize('NFC')) {
+      throw new DownloadError('The folder being zipped was replaced or redirected. No ZIP was created; inspect the save location.');
+    }
+    const expected = new Map();
+    const addDirectory = relative => {
+      if (!relative) return;
+      const parts = relative.split('/');
+      if (parts.some(part => !part || part === '.' || part === '..' || part.includes('\\'))) throw new DownloadError('The saved folder manifest contains an unsafe path.');
+      for (let i = 1; i <= parts.length; i++) expected.set(parts.slice(0, i).join('/'), 'directory');
+    };
+    for (const directory of job.directories || []) addDirectory(directory.local);
+    for (let i = 0; i < (job.entries || []).length; i++) {
+      const entry = job.entries[i];
+      const parts = entry.local.split('/');
+      if (parts.some(part => !part || part === '.' || part === '..' || part.includes('\\'))) throw new DownloadError('The saved folder manifest contains an unsafe path.');
+      addDirectory(parts.slice(0, -1).join('/'));
+      expected.set(entry.local, 'file');
+      const info = await fileInfo(path.join(root, ...parts));
+      if (!this.matchesFinished(children[i], info)) throw new DownloadError('A finished folder file changed or is missing. Check the saved folder before making a ZIP.');
+    }
+    const actual = new Map();
+    const visit = async (directory, relative = '') => {
+      for (const name of await fs.readdir(directory)) {
+        const itemRelative = relative ? `${relative}/${name}` : name;
+        const info = await fs.lstat(path.join(directory, name));
+        if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) throw new DownloadError('The download folder contains an unexpected link or special file. No ZIP was created.');
+        actual.set(itemRelative, info.isDirectory() ? 'directory' : 'file');
+        if (info.isDirectory()) await visit(path.join(directory, name), itemRelative);
+      }
+    };
+    await visit(root);
+    if (actual.size !== expected.size || [...expected].some(([name, kind]) => actual.get(name) !== kind)) {
+      throw new DownloadError('The download folder contains extra or missing items. No ZIP was created; your files were kept.');
+    }
+  }
+
+  async createFolderZip(job, children, signal) {
+    const existing = await fileInfo(job.target);
+    if (existing) {
+      if (this.matchesFinished({ready:job.archiveReady}, existing)) return 'The verified ZIP was already saved.';
+      throw new DownloadError('A file already exists where the ZIP should be saved. The downloaded folder was kept.');
+    }
+    await this.validateFolderStage(job, children);
+    const size = (job.entries || []).reduce((sum, entry) => sum + (Number(entry.size) || 0), 0);
+    try {
+      const space = await fs.statfs(job.destination);
+      if (Number(space.bavail) * Number(space.bsize) < size) throw new DownloadError('There may not be enough free space to assemble a ZIP of this folder. Free up disk space and resume; the downloaded files were kept.');
+    } catch (error) {
+      if (error instanceof DownloadError) throw error;
+    }
+    const temporary = path.join(job.destination, `${job.name}.assembling-${job.id}.zip`);
+    const staleAssembly = await fileInfo(temporary);
+    if (staleAssembly) {
+      if (!staleAssembly.isFile() || staleAssembly.isSymbolicLink()) throw new DownloadError('A previous ZIP assembly path is no longer a regular file. It was kept for inspection.');
+      if (this.matchesFinished({ready:job.archiveReady}, staleAssembly)) {
+        if (await this.verifyArchive(temporary, signal) !== 0) {
+          throw new DownloadError('The ZIP failed its integrity check. Your downloaded folder was kept.');
+        }
+        signal.throwIfAborted();
+        await this.publish(temporary, job.target);
+        const recovered = await fileInfo(job.target);
+        if (!this.matchesFinished({ready:job.archiveReady}, recovered)) throw new DownloadError('The saved ZIP assembly could not be confirmed after recovery.');
+        try {
+          await this.validateFolderStage(job, await this.folderChildren(job));
+          for (const entry of job.entries || []) await fs.unlink(path.join(job.folderRoot || job.target, ...entry.local.split('/')));
+          const dirs = [...new Set([...(job.directories || []).map(item => item.local), ...(job.entries || []).map(item => item.local.split('/').slice(0,-1).join('/'))])]
+            .filter(Boolean).map(item => path.join(job.folderRoot || job.target, ...item.split('/')))
+            .sort((a,b) => b.split(path.sep).length - a.split(path.sep).length);
+          for (const dir of dirs) await fs.rmdir(dir);
+          await fs.rmdir(job.folderRoot || job.target);
+        } catch { /* A verified ZIP is enough to complete; leave any unconfirmed staging files in place. */ }
+        return 'Recovered and verified the ZIP after an interruption.';
+      }
+      // The name is scoped by this job's UUID. An interrupted, unpublished
+      // assembly is safe to discard; the resumable source files remain intact.
+      await fs.unlink(temporary);
+    }
+    try {
+      const archiveExit = await this.archiveFolder(job.folderRoot || job.target, temporary, signal);
+      signal.throwIfAborted();
+      if (archiveExit !== undefined && archiveExit !== 0) {
+        throw new DownloadError('ZIP assembly failed. Your downloaded folder was kept.');
+      }
+      if (await this.verifyArchive(temporary, signal) !== 0) {
+        throw new DownloadError('The ZIP failed its integrity check. Your downloaded folder was kept.');
+      }
+      signal.throwIfAborted();
+      const before = await fileInfo(temporary);
+      const header = Buffer.alloc(4);
+      const handle = await fs.open(temporary, 'r');
+      try { await handle.read(header, 0, 4, 0); } finally { await handle.close(); }
+      if (!before?.isFile() || before.size < 22 || !['504b0304', '504b0506', '504b0708'].includes(header.toString('hex'))) {
+        throw new DownloadError('The ZIP failed its integrity check. Your downloaded folder was kept.');
+      }
+      signal.throwIfAborted();
+      job.archiveReady = {verified:true,size:before.size,ino:before.ino,dev:before.dev,modified:before.mtimeMs};
+      await this.save(job);
+      await this.publish(temporary, job.target);
+      const final = await fileInfo(job.target);
+      if (!final?.isFile() || final.size !== before.size || final.ino !== before.ino || final.dev !== before.dev) {
+        throw new DownloadError('The ZIP could not be confirmed at its final save location. Your downloaded folder was kept.');
+      }
+      job.archiveReady.modified = final.mtimeMs;
+      await this.save(job);
+      let cleanup = '';
+      try {
+        await this.validateFolderStage(job, children);
+        const paths = (job.entries || []).map(entry => path.join(job.folderRoot || job.target, ...entry.local.split('/')));
+        for (const file of paths) await fs.unlink(file);
+        const directories = [...new Set(['', ...(job.directories || []).map(item => item.local), ...(job.entries || []).map(item => item.local.split('/').slice(0, -1).join('/'))])]
+          .filter(Boolean).map(item => path.join(job.folderRoot || job.target, ...item.split('/')))
+          .sort((a, b) => b.split(path.sep).length - a.split(path.sep).length);
+        for (const directory of directories) await fs.rmdir(directory);
+        await fs.rmdir(job.folderRoot || job.target);
+      } catch {
+        cleanup = ' The verified ZIP is saved; the source folder was kept because safe cleanup could not be confirmed.';
+      }
+      return `ZIP verified and saved.${cleanup}`;
+    } catch (error) {
+      await fs.unlink(temporary).catch(() => {});
+      throw error;
+    }
+  }
+
   async runFolder(job, signal) {
     const started = Date.now();
-    await this.log(job, `--- Folder attempt started (${this.version}). Files download separately; ZIP mode is not used. ---`);
+    await this.log(job, `--- Folder attempt started (${this.version}). Output: ${job.folderOutput === 'zip' ? 'one verified ZIP' : 'normal folder with separate files'}. ---`);
     try {
+      const completedArchive = job.folderOutput === 'zip' && await fileInfo(job.target);
+      if (completedArchive && this.matchesFinished({ready:job.archiveReady}, completedArchive)) {
+        const message = `Completed. Verified ZIP saved as ${job.name}.`;
+        await this.status(job, 'Completed', message);
+        await this.log(job, `Result: ${message}`);
+        return;
+      }
       if (!job.listed) {
         await this.status(job,'Listing','Listing all folder pages and subfolders before starting files.');
-        const manifest = await this.discover(job.link,{signal,onProgress:progress=>{
-          job.message=progress.message;this.send();
-        }});
+        const manifest = job.provider === 'google-drive'
+          ? await discoverGoogleDriveFolder(job.link, {client:this.createDriveClient(),signal,onProgress:progress=>{
+            job.message=progress.message;this.send();
+          }})
+          : await this.discover(job.link,{signal,onProgress:progress=>{
+            job.message=progress.message;this.send();
+          }});
         signal.throwIfAborted();
+        const unsupported = manifest.files.filter(entry => entry.state === 'Needs export' || entry.state === 'Unavailable');
+        if (unsupported.length) {
+          const docs = unsupported.filter(entry => entry.state === 'Needs export').length;
+          const blocked = unsupported.length - docs;
+          throw new DownloadError(`Folder listing found ${unsupported.length} item${unsupported.length===1?'':'s'} GOB cannot download yet (${docs} Workspace document${docs===1?'':'s'}${blocked?`, ${blocked} download-restricted`:''}). No files were started.`);
+        }
         // Save the complete snapshot before creating any transfer. An interrupted
         // listing is never confused with an empty or successfully finished folder.
-        job.entries = manifest.files.map(entry=>({...entry,id:randomUUID()}));
+        // Keep Drive's remote file ID separate from the local History child ID.
+        // They are different namespaces; replacing the remote ID with a UUID
+        // makes a folder child request the wrong Drive object on resume/start.
+        job.entries = manifest.files.map(entry=>({...entry,driveId:entry.id,id:randomUUID()}));
         job.directories = manifest.directories;
         const worker = new Downloader({root:this.jobPath(job,'children'),aria:this.aria,publish:this.publish,emit:()=>{}});
         await fs.mkdir(worker.root,{recursive:true,mode:0o700});
         for (const entry of job.entries) {
-          const target=path.join(job.target,...entry.local.split('/'));
+          const target=path.join(job.folderRoot || job.target,...entry.local.split('/'));
           const child={id:entry.id,name:path.basename(target),destination:path.dirname(target),target,
-            link:entry.url,folder:false,kind:'file',onePass:false,brutal:job.brutal,
+            link:entry.url||job.link,provider:job.provider||'dropbox',driveFile:job.provider==='google-drive'?{
+              id:entry.driveId||entry.id,name:path.basename(target),mimeType:entry.mimeType,size:entry.size,
+              md5Checksum:entry.md5Checksum||'',resourceKey:entry.resourceKey||''
+            }:undefined,folder:false,kind:'file',onePass:false,brutal:job.brutal,
             notifications:false,checksum:'',created:job.created,status:'Queued',connections:job.connections,
             speedCap:job.speedCap,folderBudget:job.brutal?Math.floor(16/Math.max(1,Math.min(3,manifest.files.length))):job.connections,expectedSize:entry.size};
           await fs.mkdir(worker.jobPath(child,''),{recursive:true,mode:0o700});
@@ -480,8 +695,8 @@ export class Downloader {
         await fs.mkdir(dir,{recursive:true});
         if ((await fs.realpath(dir)).normalize('NFC') !== dir.normalize('NFC') || !(await fileInfo(dir))?.isDirectory()) throw new DownloadError('A folder destination contains a substituted link. Files were kept.');
       };
-      await ensureDirectory(job.target);
-      for(const dir of job.directories||[]) await ensureDirectory(path.join(job.target,...dir.local.split('/')));
+      await ensureDirectory(job.folderRoot || job.target);
+      for(const dir of job.directories||[]) await ensureDirectory(path.join(job.folderRoot || job.target,...dir.local.split('/')));
       for(const child of children) await ensureDirectory(child.destination);
       let parallelLimit = job.brutal ? 3 : 1;
       const update = () => {
@@ -504,7 +719,7 @@ export class Downloader {
           const index=cursor++,child=children[index];
           if(child.status==='Completed') {update();continue;}
           if(parallelLimit===1&&job.brutal) {child.brutal=false;child.folderBudget=1;}
-          const app = new Downloader({root:this.jobPath(job,'children'),aria:this.aria,publish:this.publish,emit:update,inspect:this.inspect,execute:this.execute,sleep:this.sleep});
+          const app = new Downloader({root:this.jobPath(job,'children'),aria:this.aria,publish:this.publish,emit:update,inspect:this.inspect,execute:this.execute,sleep:this.sleep,driveApiKey:this.driveApiKey,driveClient:this.driveClient});
           app.jobs.set(child.id,child);
           app.log=(_child,message)=>this.log(job,`File ${index+1}/${children.length}: ${message}`);
           await app.run(child,null,false,signal);
@@ -516,10 +731,15 @@ export class Downloader {
       const rejected = results.find(result=>result.status==='rejected');
       if(rejected) throw rejected.reason;
       update();
-      const status=signal.aborted?'Paused':children.every(child=>child.status==='Completed')?'Completed':'Failed';
-      const message=status==='Completed'?`Completed. ${children.length} files saved and verified.`:
+      let status=signal.aborted?'Paused':children.every(child=>child.status==='Completed')?'Completed':'Failed';
+      let message=status==='Completed'?`Completed. ${children.length} files saved and verified.`:
         status==='Paused'?`Paused. ${job.completedFiles}/${children.length} files completed; Resume keeps them.`:
         `${job.completedFiles}/${children.length} files completed. Resume retries unfinished files.`;
+      if (status === 'Completed' && job.folderOutput === 'zip') {
+        await this.status(job, 'Verifying', 'Every file is verified. Assembling and checking the ZIP…');
+        message = await this.createFolderZip(job, children, signal);
+        message = `Completed. ${children.length} files verified and saved as ${job.name}. ${message}`;
+      }
       await this.status(job,status,message);
       await this.log(job,`Result: ${message}`);
       if(job.notifications&&status!=='Paused')this.emit({type:'notification',title:status==='Completed'?'Folder download completed':'Folder needs attention',body:message});
@@ -535,12 +755,16 @@ export class Downloader {
     for (const url of fallback ? link.urls : link.urls.slice(0, 1)) {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          return { url, sample: { ...await this.inspect(url, job.folder, job.onePass, signal), key: link.key } };
+          const sample = await this.inspect(url, job.folder, job.onePass, signal, fetch,
+            link.provider === 'google-drive' ? allowedDriveRedirect : allowedRedirect, link.headers||{},
+            link.provider === 'google-drive' ? 'Google Drive' : 'Dropbox');
+          if (link.tag && !sample.tag) sample.tag = link.tag;
+          return { url, sample: { ...sample, key: link.key } };
         } catch (e) {
           signal.throwIfAborted();
           last = e;
           if (e.zipResponse && job.expectedSize === undefined && /^https:\/\/(?:www\.)?dropbox\.com\/(?:scl\/fo|sh)\//.test(link.original)) throw e;
-          if (!(e instanceof DownloadError)) last = new DownloadError('The network timed out or could not reach Dropbox.', 503);
+          if (!(e instanceof DownloadError)) last = new DownloadError(`The network timed out or could not reach ${link.provider === 'google-drive'?'Google Drive':'Dropbox'}.`, 503);
           if (attempt === 2 || !httpRetry.has(last.http) || [403, 410].includes(last.http) || last.wait > 120) break;
           const seconds = Math.max(last.wait, last.http === 429 ? 30 : 5);
           await this.log(job, `Link check failed. Waiting ${seconds}s before checking again.`);
@@ -581,8 +805,29 @@ export class Downloader {
         return;
       }
       if (await fileInfo(job.target)) throw new DownloadError('The final filename is already in use.');
-      const link = parseLink(refreshed || job.link);
-      if (link.folder !== job.folder) throw new DownloadError('Use the same type of Dropbox link as the original download.');
+      let link;
+      if (job.provider === 'google-drive') {
+        const parsed = parseGoogleDriveLink(refreshed || job.link);
+        const isFolderChild = job.expectedSize !== undefined;
+        const driveId = isFolderChild ? job.driveFile?.id : parsed.id;
+        const resourceKey = isFolderChild ? (job.driveFile?.resourceKey||'') : parsed.resourceKey;
+        const file = await this.createDriveClient().metadata(driveId, resourceKey, signal);
+        if (file.mimeType === 'application/vnd.google-apps.folder' || file.mimeType.startsWith('application/vnd.google-apps.')) {
+          throw new DownloadError('This Drive item is no longer a downloadable binary file. Check its sharing and file type.');
+        }
+        if (file.capabilities?.canDownload === false) throw new DownloadError('The owner has disabled downloading for this Google Drive item.');
+        const driveFile = {id:file.id,name:file.name,mimeType:file.mimeType,size:Number(file.size),md5Checksum:file.md5Checksum||'',resourceKey:file.resourceKey||resourceKey||''};
+        if (!Number.isSafeInteger(driveFile.size) || driveFile.size < 0) throw new DownloadError('Google Drive did not provide a reliable file size.');
+        if (job.expectedSize !== undefined && driveFile.size !== job.expectedSize) throw new DownloadError('This Google Drive file changed size after the folder was listed. Saved files were kept.');
+        job.driveFile = driveFile;
+        const transfer = driveTransferRequest(driveFile, {apiKey:this.driveApiKey});
+        link = {provider:'google-drive',original:parsed.original,folder:false,urls:[transfer.url],headers:transfer.headers,
+          key:hash(`drive:${driveFile.id}:${driveFile.resourceKey}`),tag:driveFile.md5Checksum?`"${driveFile.md5Checksum}"`:''};
+      } else {
+        link = parseLink(refreshed || job.link);
+        link.provider = 'dropbox';
+      }
+      if (link.folder !== job.folder) throw new DownloadError(`Use the same type of ${job.provider==='google-drive'?'Google Drive':'Dropbox'} link as the original download.`);
       let resumed = false;
       if (streamOnly && restart) {
         // Keep the interrupted stream available for inspection.
@@ -602,12 +847,15 @@ export class Downloader {
         }
         job.onePass = true;
         streamOnly = true;
-        await this.log(job, 'Dropbox ignored ranges. Automatically using one stream for this new download.');
+        await this.log(job, `${job.provider==='google-drive'?'Google Drive':'Dropbox'} ignored ranges. Automatically using one stream for this new download.`);
         checked = await this.inspectWithRetry(job, link, signal);
       }
       const { sample, url } = checked;
+      if (job.provider === 'google-drive' && sample.total !== job.driveFile?.size) {
+        throw new DownloadError('Google Drive returned a different file size than its metadata. Saved files were kept.');
+      }
       if (job.expectedSize !== undefined && sample.total !== job.expectedSize) {
-        throw new DownloadError('This file changed size after the folder was listed. Saved files were kept; download the changed folder under a new name.');
+        throw new DownloadError(`This ${job.provider==='google-drive'?'Google Drive':'Dropbox'} file changed size after the folder was listed. Saved files were kept; download the changed folder under a new name.`);
       }
       if (resumed) {
         assertSameSource(job.source, sample);
@@ -622,7 +870,7 @@ export class Downloader {
       job.source = sample;
       job.link = link.original;
       await this.save(job);
-      await this.log(job, `Source checked. Size: ${sample.total || 'unknown'} bytes. Mode: ${streamOnly ? 'single stream' : 'resumable'}.`);
+      await this.log(job, `Source checked. Provider: ${job.provider==='google-drive'?'Google Drive':'Dropbox'}. Size: ${sample.total || 'unknown'} bytes. Mode: ${streamOnly ? 'single stream' : 'resumable'}.`);
 
       let connections = streamOnly ? 1 : job.folderBudget || (job.brutal ? 16 : job.connections);
       let brutal = job.brutal;
@@ -641,6 +889,7 @@ export class Downloader {
           `--max-connection-per-server=${connections}`, `--split=${connections}`,
           `--dir=${job.destination}`, `--out=${path.basename(partial)}`
         ];
+        for (const [name,value] of Object.entries(link.headers||{})) options.push(`--header=${name}: ${value}`);
         if (!brutal && job.speedCap) options.push(`--max-download-limit=${job.speedCap}M`);
         let resultOK = false, lastHttp = 0, lastUpdate = 0, lastLog = 0;
         let progressLog = Promise.resolve();
@@ -660,14 +909,14 @@ export class Downloader {
             }
           }
         }).finally(async () => { await progressLog; });
-        await this.log(job, `aria2 exit code ${code}.${lastHttp ? ` Dropbox returned HTTP ${lastHttp}. ${httpMeaning[lastHttp] || 'The server rejected the request.'}` : ''}`);
+        await this.log(job, `aria2 exit code ${code}.${lastHttp ? ` ${job.provider==='google-drive'?'Google Drive':'Dropbox'} returned HTTP ${lastHttp}. ${httpMeaning[lastHttp] || 'The server rejected the request.'}` : ''}`);
         const info = await fileInfo(partial);
         const controlExists = Boolean(await fileInfo(control));
         const checkpoint = !streamOnly && controlExists ? await readCheckpoint(control) : null;
         const completeCheckpoint = checkpoint?.complete && checkpoint.total === sample.total;
         if (info?.isFile() && ((code === 0 || resultOK) && !controlExists || completeCheckpoint)) {
           if ((sample.total && info.size !== sample.total) || info.size < sample.count) {
-            throw new DownloadError('The final byte count did not match Dropbox. The partial was kept.');
+            throw new DownloadError(`The final byte count did not match ${job.provider==='google-drive'?'Google Drive':'Dropbox'}. The partial was kept.`);
           }
           if (code !== 0) await this.log(job, 'The final result or saved pieces confirm all bytes arrived. Checking the file locally.');
           job.ready = { size: info.size, ino: info.ino, dev: info.dev, modified: info.mtimeMs, checkpoint: Boolean(completeCheckpoint) };
@@ -698,7 +947,7 @@ export class Downloader {
       }
     } catch (e) {
       const message = signal.aborted ? pauseText :
-        e instanceof DownloadError ? e.message : 'The network, save volume, or download history became unavailable. Saved transfer files were kept.';
+        e instanceof DownloadError || e instanceof GoogleDriveError ? e.message : 'The network, save volume, or download history became unavailable. Saved transfer files were kept.';
       await this.log(job, `Result: ${message}`);
       if (!signal.aborted && job.notifications) this.emit({ type: 'notification', title: 'Download needs attention', body: job.name });
       await this.status(job, signal.aborted ? 'Paused' : 'Failed', message);
@@ -725,6 +974,13 @@ export class Downloader {
       }
       if (!job.ready.verified) {
         await verifyPrefix(partial, job.source);
+        if (job.provider === 'google-drive' && /^[a-f0-9]{32}$/i.test(job.driveFile?.md5Checksum||'')) {
+          const digest = createHash('md5');
+          for await (const chunk of createReadStream(partial, { signal })) digest.update(chunk);
+          if (digest.digest('hex').toLowerCase() !== job.driveFile.md5Checksum.toLowerCase()) {
+            throw new DownloadError('Google Drive’s MD5 check did not match. The partial was kept for inspection.');
+          }
+        }
         if (job.checksum) {
           const digest = createHash('sha256');
           for await (const chunk of createReadStream(partial, { signal })) digest.update(chunk);

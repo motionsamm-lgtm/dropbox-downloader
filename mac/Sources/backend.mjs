@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { checkUpdate, downloadUpdate, currentVersion } from './updates.mjs';
 import { Downloader, DownloadError } from './engine.mjs';
+import { GoogleDriveError } from './google-drive.mjs';
 
 const [root, helper, downloads] = process.argv.slice(2);
 const output = value => process.stdout.write(JSON.stringify(value) + '\n');
@@ -18,7 +19,7 @@ const invoke = (binary, args) => new Promise((resolve, reject) => {
   child.on('close', code => code === 0 ? resolve() : reject(new Error('Command failed.')));
 });
 const app = new Downloader({
-  root, aria, version: 'GOB ' + currentVersion, emit: output, publish: (from, to) => invoke(helper, ['--publish', from, to])
+  root, aria, version: 'GOB ' + currentVersion, driveApiKey:process.env.GOB_DRIVE_API_KEY || '', emit: output, publish: (from, to) => invoke(helper, ['--publish', from, to])
 });
 await app.load();
 output({ type: 'ready', downloads, available: Boolean(aria) });
@@ -100,7 +101,7 @@ async function handle(line) {
       await invoke('/usr/bin/open', ['-R', job.target]);
     }
   } catch (e) {
-    output({ type: 'error', message: e instanceof DownloadError ? e.message : 'The requested action could not finish.' });
+    output({ type: 'error', message: e instanceof DownloadError || e instanceof GoogleDriveError ? e.message : 'The requested action could not finish.' });
   } finally { app.send(); }
 }
 lines.on('line', line => { queue = queue.then(() => handle(line)); });

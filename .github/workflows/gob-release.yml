@@ -5,7 +5,7 @@ on:
       version:
         description: New version, increase for every release
         required: true
-        default: '1.1.0'
+        default: '1.2.0'
         type: string
 concurrency:
   group: gob-production-release
@@ -26,8 +26,10 @@ jobs:
       - name: Validate version and avoid replacing an existing release
         env:
           GH_TOKEN: ${{ github.token }}
+          GOB_DRIVE_API_KEY: ${{ secrets.GOB_DRIVE_API_KEY }}
         run: |
           python -c 'import os,re; assert re.fullmatch(r"\d+\.\d+\.\d+",os.environ["GOB_VERSION"])'
+          python -c 'import os; assert os.environ.get("GOB_DRIVE_API_KEY"), "Add the restricted GOB_DRIVE_API_KEY repository secret before building a Drive-enabled release."'
           if gh release view "gob-v$GOB_VERSION" >/dev/null 2>&1; then echo 'This release version already exists.'; exit 1; fi
       - name: Stamp release version in actual sources
         run: python .github/scripts/stamp-version.py "$GOB_VERSION"
@@ -49,6 +51,8 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
       - name: Compile native app and standard installer
         shell: powershell
+        env:
+          GOB_DRIVE_API_KEY: ${{ secrets.GOB_DRIVE_API_KEY }}
         run: ./windows/Build-Windows.ps1
       - uses: actions/setup-python@v5
         with:
@@ -101,6 +105,7 @@ jobs:
         working-directory: mac
         env:
           GOB_NATIVE_ARCH: ${{ matrix.arch }}
+          GOB_DRIVE_API_KEY: ${{ secrets.GOB_DRIVE_API_KEY }}
         run: bash Scripts/package-mac.sh
       - name: Verify real folder pause, restart, native publication and Trash
         if: matrix.arch == 'x86_64'

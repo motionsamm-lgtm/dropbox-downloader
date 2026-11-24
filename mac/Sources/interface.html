@@ -6,8 +6,9 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <title>GOB — Grab Our Bytes</title>
 <style>
-:root { color-scheme: light dark; font: 14px -apple-system,BlinkMacSystemFont,sans-serif; --bg:#f5f5f8; --card:#fff; --ink:#202126; --muted:#64666f; --line:#dedee5; --accent:#005acb; --tint:#e9f2ff }
-@media(prefers-color-scheme:dark) {:root {--bg:#202125;--card:#2a2b30;--ink:#f3f3f6;--muted:#b8bac5;--line:#45464e;--accent:#80b8ff;--tint:#263c56}}
+:root { color-scheme:light; font:calc(14px * var(--ui-scale,1)) -apple-system,BlinkMacSystemFont,sans-serif; --bg:#f5f5f8; --card:#fff; --ink:#202126; --muted:#64666f; --line:#dedee5; --accent:#5687d8; --tint:#e9f2ff; --raised:#f0f0f4 }
+:root[data-theme="dark"] { color-scheme:dark; --bg:#09090a; --card:#101113; --ink:#f3f3f6; --muted:#a8abb3; --line:#292a2e; --accent:#91b8ff; --tint:#1c2431; --raised:#191a1e }
+@media(prefers-color-scheme:dark) {:root:not([data-theme="light"]) {color-scheme:dark;--bg:#09090a;--card:#101113;--ink:#f3f3f6;--muted:#a8abb3;--line:#292a2e;--accent:#91b8ff;--tint:#1c2431;--raised:#191a1e}}
 * {box-sizing:border-box} body {margin:0;background:var(--bg);color:var(--ink)} main {max-width:1150px;margin:auto;padding:28px}
 header {margin-bottom:24px} h1 {margin:3px 0 7px;font-size:32px;letter-spacing:-.045em} h2 {margin:0;font-size:18px}
 .eyebrow {font-size:11px;font-weight:700;letter-spacing:.12em;color:var(--accent);text-transform:uppercase}
@@ -37,6 +38,31 @@ progress {width:100%;accent-color:var(--accent);height:12px}
 #notice {margin-bottom:15px;border:1px solid var(--line);border-radius:9px;padding:9px 12px;background:var(--tint)}
 dialog {width:min(420px,90vw);border:1px solid var(--line);border-radius:13px;background:var(--card);color:var(--ink);padding:17px}
 dialog::backdrop {background:#0006} dialog p {margin:10px 0}
+.toolbar {display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.toolbar button {padding:7px 10px}
+#settingsDialog {width:min(760px,94vw);height:min(620px,88vh);max-height:88vh;padding:0;overflow:hidden}
+.settings-shell {display:grid;grid-template-columns:190px minmax(0,1fr);height:100%}
+.settings-nav {padding:20px 12px;background:var(--raised);border-right:1px solid var(--line)}
+.settings-nav h2 {font-size:17px;margin:0 10px 16px}
+.settings-nav button {width:100%;display:flex;justify-content:flex-start;text-align:left;border:0;background:transparent;margin:2px 0;padding:9px 10px;font-weight:500}
+.settings-nav button[aria-current="page"] {background:var(--tint);color:var(--accent);font-weight:700}
+.settings-content {padding:24px;overflow:auto;min-width:0}
+.settings-top {display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:20px}
+.settings-top h2 {font-size:21px}
+.setting-row {display:grid;grid-template-columns:minmax(140px,.8fr) minmax(180px,1fr);gap:16px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.setting-row p {font-size:12px;color:var(--muted);font-weight:400;margin-top:3px}
+.setting-row input:not([type=color]),.setting-row select {max-width:270px}
+.colors-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 18px;margin:12px 0}
+.color-row {display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.color-row input {width:42px;height:32px;border:0;padding:0;background:transparent}
+.preview-swatch {border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--bg);margin-top:16px}
+.preview-card {background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px;margin-top:8px}
+.settings-actions {display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.settings-description {max-width:62ch;color:var(--muted);font-size:13px;margin-bottom:16px}
+.settings-content .field {max-width:420px}
+.compact .panel {padding:14px}.compact .field {margin-bottom:8px}.compact .toggle {margin:5px 0}
+[hidden] {display:none!important}
+@media(max-width:600px) {.settings-shell {grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)} .settings-nav {display:flex;overflow:auto;gap:4px;padding:8px;border-right:0;border-bottom:1px solid var(--line)} .settings-nav h2 {display:none} .settings-nav button {width:auto;white-space:nowrap} .settings-content {padding:17px}.setting-row {grid-template-columns:1fr;gap:6px}.colors-grid {grid-template-columns:1fr}}
 [hidden] {display:none!important}
 @media(max-width:750px) {.grid {grid-template-columns:1fr} main {padding:19px} header {margin-bottom:17px} h1 {font-size:28px}}
 @media(prefers-reduced-motion:reduce) {button:active:not(:disabled) {transform:none}}
@@ -44,17 +70,18 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 </head>
 <body>
 <main>
-<header><div class="eyebrow">GOB — Grab Our Bytes for Mac</div><h1>GOB <span class="muted" style="font-size:14px">1.1.4</span></h1><button id="updates" type="button">Check for updates</button><p class="muted">Save a file or download a folder file by file.</p></header>
+<header class="toolbar"><div><div class="eyebrow">GOB — Grab Our Bytes for Mac</div><h1>GOB <span class="muted" style="font-size:14px">1.2.0</span></h1><p class="muted">Save a file or download a folder file by file.</p></div><div><button id="openSettings" type="button" aria-haspopup="dialog">Settings</button><button id="updates" type="button">Check for updates</button></div></header>
 <p id="notice" role="alert" hidden></p>
 <div class="grid">
   <section class="panel" aria-labelledby="newTitle">
     <div class="section-head"><h2 id="newTitle">New download</h2></div>
     <form id="setup">
-      <div class="field"><label for="link">Dropbox link</label><input id="link" type="url" placeholder="https://www.dropbox.com/…" required spellcheck="false"></div>
-      <div class="field"><label for="name">Save as <span class="muted">(optional)</span></label><input id="name" placeholder="Use Dropbox filename"></div>
+      <div class="field"><label for="link">Dropbox or Google Drive link</label><input id="link" type="url" placeholder="Paste a shared file or folder link" required spellcheck="false"></div>
+      <div class="field"><label for="name">Save as <span class="muted">(optional)</span></label><input id="name" placeholder="Use the shared item’s name"></div>
+      <div class="field" id="folderOutputChoice" hidden><label for="folderOutput">Folder output</label><select id="folderOutput"><option value="folder">Normal folder</option><option value="zip">One ZIP file</option></select><p class="muted">ZIP is assembled after every file finishes and verifies.</p></div>
       <div class="field"><label for="destination">Save folder</label><div class="row"><input id="destination" readonly placeholder="Choose a folder"><button type="button" id="browse">Browse</button></div></div>
       <div class="brutal"><label><input id="brutal" type="checkbox" checked>Brutal</label><p class="muted">Up to 16 connections for files. Automatically switches to one on a retryable failure.</p></div>
-      <label class="toggle"><input id="subfolder" type="checkbox">Create a subfolder named after the file</label>
+      <label class="toggle"><input id="subfolder" type="checkbox" checked>Create a subfolder named after the download</label>
       <label class="toggle"><input id="notifications" type="checkbox">Show macOS notifications</label>
       <details><summary>Transfer settings</summary><div>
         <div class="row"><div class="field"><label for="connections">Connections</label><select id="connections"><option>1</option><option>2</option><option>3</option><option selected>4</option></select></div>
@@ -86,9 +113,65 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 <dialog id="resumeDialog">
   <form id="resumeForm">
     <h2 id="resumeTitle">Resume download</h2><p id="resumeDescription" class="muted"></p>
-    <div id="newLinkField" class="field" hidden><label for="newLink">New Dropbox link</label><input id="newLink" type="url" spellcheck="false"></div>
+    <div id="newLinkField" class="field" hidden><label for="newLink">Updated share link</label><input id="newLink" type="url" spellcheck="false"></div>
     <div class="actions"><span class="push"></span><button type="button" id="cancel">Cancel</button><button class="primary" id="confirm" type="submit">Resume</button></div>
   </form>
+</dialog>
+<dialog id="settingsDialog" aria-labelledby="settingsHeading">
+  <div class="settings-shell">
+    <nav class="settings-nav" aria-label="Settings sections">
+      <h2>Settings</h2>
+      <button type="button" data-section="appearance" aria-current="page">Appearance</button>
+      <button type="button" data-section="downloads">Downloads</button>
+      <button type="button" data-section="notifications">Notifications</button>
+      <button type="button" data-section="updates">Updates</button>
+      <button type="button" data-section="about">About</button>
+    </nav>
+    <section class="settings-content">
+      <div class="settings-top"><h2 id="settingsHeading">Appearance</h2><button type="button" id="closeSettings" aria-label="Close settings">Done</button></div>
+      <section data-panel="appearance">
+        <p class="settings-description">Choose how GOB looks. Colors apply to the app interface and are saved on this Mac.</p>
+        <div class="setting-row"><div><strong>Appearance</strong><p>Follow macOS or choose a mode.</p></div><select id="prefTheme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+        <div class="setting-row"><div><strong>Theme</strong><p>Start with GOB Matte or a light surface.</p></div><select id="prefPreset"><option value="matte">GOB Matte</option><option value="paper">Warm Paper</option><option value="custom">Custom colors</option></select></div>
+        <div id="customColors" hidden>
+          <p class="settings-description">Adjust the main surfaces and text. Keep text and background contrast high for readability.</p>
+          <div class="colors-grid">
+            <label class="color-row">Window background <input type="color" data-color="bg"></label>
+            <label class="color-row">Panel surface <input type="color" data-color="card"></label>
+            <label class="color-row">Raised surface <input type="color" data-color="raised"></label>
+            <label class="color-row">Primary text <input type="color" data-color="ink"></label>
+            <label class="color-row">Secondary text <input type="color" data-color="muted"></label>
+            <label class="color-row">Accent <input type="color" data-color="accent"></label>
+          </div>
+        </div>
+        <div class="setting-row"><div><strong>Text size</strong><p>Adjust interface text.</p></div><select id="prefScale"><option value="0.92">Small</option><option value="1">Default</option><option value="1.08">Large</option><option value="1.16">Extra large</option></select></div>
+        <div class="setting-row"><div><strong>Density</strong><p>Choose compact or comfortable spacing.</p></div><select id="prefDensity"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div>
+        <div class="preview-swatch"><strong>Live preview</strong><div class="preview-card"><strong>Podcast-20.mp4</strong><p class="muted">Downloading · 42% · 18.4 MiB/s</p><progress max="100" value="42"></progress></div></div>
+        <div class="settings-actions"><button type="button" id="resetTheme">Reset appearance</button></div>
+      </section>
+      <section data-panel="downloads" hidden>
+        <p class="settings-description">Set defaults for new downloads. You can still change them before starting a transfer.</p>
+        <label class="setting-row"><span><strong>Create filename subfolder</strong><p>Keep each folder download inside its own named folder.</p></span><input id="prefSubfolder" type="checkbox" checked></label>
+        <div class="setting-row"><div><strong>Folder output</strong><p>Normal folder is the default. ZIP is built after all files verify.</p></div><select id="prefFolderOutput"><option value="folder">Normal folder</option><option value="zip">One ZIP file</option></select></div>
+        <div class="setting-row"><div><strong>Connections</strong><p>Used when the provider supports range downloads.</p></div><select id="prefConnections"><option>1</option><option>2</option><option>3</option><option selected>4</option></select></div>
+        <label class="setting-row"><span><strong>Brutal mode</strong><p>Allow more connections, then reduce them automatically when a server struggles.</p></span><input id="prefBrutal" type="checkbox" checked></label>
+        <label class="setting-row"><span><strong>One pass</strong><p>Start a new file transfer from zero instead of resuming.</p></span><input id="prefOnePass" type="checkbox"></label>
+      </section>
+      <section data-panel="notifications" hidden>
+        <p class="settings-description">Choose which download events appear as macOS notifications.</p>
+        <label class="setting-row"><span><strong>Show notifications</strong><p>Ask macOS for permission when enabled.</p></span><input id="prefNotifications" type="checkbox" checked></label>
+        <p class="settings-description">GOB uses the macOS notification style. The app cannot recolor system notification banners.</p>
+      </section>
+      <section data-panel="updates" hidden>
+        <p class="settings-description">GOB checks for updates on launch and every hour. Updates are installed only when you choose Update.</p>
+        <button type="button" id="settingsCheckUpdates">Check for updates</button>
+      </section>
+      <section data-panel="about" hidden>
+        <p class="settings-description"><strong>GOB — Grab Our Bytes</strong><br>Download manager for shared files and folders.</p>
+        <p class="settings-description">Current version: <span id="aboutVersion">1.2.0</span><br>Saved data and logs remain on this Mac.</p>
+      </section>
+    </section>
+  </div>
 </dialog>
 <script>
 const $ = id => document.getElementById(id);
@@ -96,6 +179,8 @@ const send = message => window.webkit.messageHandlers.downloads.postMessage(mess
 const text = (id, value) => { $(id).textContent = value; };
 let jobs = [], active = null, selected = null, online = false, pending = false, paused = false;
 let dialogJob = null, editLink = false;
+const defaultSettings = {theme:'system',preset:'matte',scale:'1',density:'comfortable',colors:{bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'},subfolder:true,folderOutput:'folder',connections:'4',brutal:true,onePass:false,notifications:true};
+let settings = structuredClone(defaultSettings);
 const bytes = n => n >= 1024 ** 3 ? (n / 1024 ** 3).toFixed(2) + ' GiB' :
   n >= 1024 ** 2 ? (n / 1024 ** 2).toFixed(1) + ' MiB' : n.toLocaleString() + ' B';
 function eta(seconds) {
@@ -104,6 +189,52 @@ function eta(seconds) {
     n >= 60 ? Math.floor(n / 60) + 'm ' + (n % 60) + 's' : n + 's';
 }
 function notice(message) { text('notice', message); $('notice').hidden = !message; }
+function applySettings() {
+  const root=document.documentElement;
+  root.dataset.theme=settings.theme==='system'?(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'):settings.theme;
+  const matte={bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'};
+  const paper={bg:'#f3ece5',card:'#fffaf5',raised:'#ece2d8',ink:'#27221f',muted:'#746a62',accent:'#a8542c'};
+  const colors=settings.preset==='custom'?settings.colors:settings.preset==='paper'?paper:matte;
+  for(const [key,value] of Object.entries(colors||{})) if(/^#[0-9a-f]{6}$/i.test(value)) root.style.setProperty('--'+key,value);
+  root.style.setProperty('--ui-scale',String(settings.scale||'1'));
+  document.body.classList.toggle('compact',settings.density==='compact');
+  $('subfolder').checked=settings.subfolder!==false;
+  $('folderOutput').value=settings.folderOutput==='zip'?'zip':'folder';
+  $('connections').value=String(settings.connections||'4');
+  $('brutal').checked=settings.brutal!==false;
+  $('onePass').checked=settings.onePass===true;
+  $('notifications').checked=settings.notifications!==false;
+  $('prefTheme').value=settings.theme||'system'; $('prefPreset').value=settings.preset||'matte';
+  $('prefScale').value=String(settings.scale||'1'); $('prefDensity').value=settings.density||'comfortable';
+  $('prefSubfolder').checked=settings.subfolder!==false; $('prefFolderOutput').value=settings.folderOutput||'folder';
+  $('prefConnections').value=String(settings.connections||'4'); $('prefBrutal').checked=settings.brutal!==false;
+  $('prefOnePass').checked=settings.onePass===true; $('prefNotifications').checked=settings.notifications!==false;
+  for(const input of document.querySelectorAll('[data-color]')) input.value=colors?.[input.dataset.color]||defaultSettings.colors[input.dataset.color];
+  $('customColors').hidden=settings.preset!=='custom';
+  refreshLinkOptions();
+}
+function saveSettings() {
+  settings={...settings,theme:$('prefTheme').value,preset:$('prefPreset').value,scale:$('prefScale').value,density:$('prefDensity').value,
+    subfolder:$('prefSubfolder').checked,folderOutput:$('prefFolderOutput').value,connections:$('prefConnections').value,
+    brutal:$('prefBrutal').checked,onePass:$('prefOnePass').checked,notifications:$('prefNotifications').checked,
+    colors:Object.fromEntries([...document.querySelectorAll('[data-color]')].map(input=>[input.dataset.color,input.value]))};
+  applySettings();
+  send({action:'saveSettings',settings});
+}
+function isFolderLink(value) {
+  try { const url=new URL(value); if(url.protocol!=='https:') return false;
+    if(['drive.google.com','www.drive.google.com'].includes(url.hostname)) return /^\/drive\/folders\//.test(url.pathname);
+    if(['dropbox.com','www.dropbox.com'].includes(url.hostname)) return /^\/(?:scl\/fo|sh)\/[^/]+\/[^/]+\/?$/.test(url.pathname);
+  } catch {}
+  return false;
+}
+function refreshLinkOptions() {
+  const folder=isFolderLink($('link').value);
+  $('folderOutputChoice').hidden=!folder;
+  $('subfolder').disabled=!folder;
+  $('subfolder').checked=folder && settings.subfolder!==false;
+  $('folderOutput').value=settings.folderOutput==='zip'?'zip':'folder';
+}
 
 function renderList() {
   const list = $('jobs');
@@ -167,6 +298,9 @@ function render() {
 }
 window.receive = event => {
   switch (event.type) {
+    case 'settings':
+      settings={...defaultSettings,...(event.settings||{}),colors:{...defaultSettings.colors,...((event.settings||{}).colors||{})}};
+      applySettings(); break;
     case 'update':
       updateAvailable=event.available;
       text('updates',event.available?'Update GOB to '+event.version:'Check for updates');
@@ -193,6 +327,19 @@ window.receive = event => {
 };
 let updateAvailable=false;
 $('updates').onclick=()=>send({action:updateAvailable?'installUpdate':'checkUpdate'});
+$('openSettings').onclick=()=>$('settingsDialog').showModal();
+$('closeSettings').onclick=()=>$('settingsDialog').close();
+for(const button of document.querySelectorAll('[data-section]')) button.onclick=()=>{
+  const section=button.dataset.section;
+  for(const nav of document.querySelectorAll('[data-section]')) nav.setAttribute('aria-current',String(nav===button));
+  for(const panel of document.querySelectorAll('[data-panel]')) panel.hidden=panel.dataset.panel!==section;
+  text('settingsHeading',section[0].toUpperCase()+section.slice(1));
+};
+for(const id of ['prefTheme','prefPreset','prefScale','prefDensity','prefSubfolder','prefFolderOutput','prefConnections','prefBrutal','prefOnePass','prefNotifications']) $(id).addEventListener('change',saveSettings);
+for(const input of document.querySelectorAll('[data-color]')) input.addEventListener('input',()=>{settings.preset='custom';$('prefPreset').value='custom';applySettings();saveSettings();});
+$('resetTheme').onclick=()=>{settings={...defaultSettings,colors:{...defaultSettings.colors}};applySettings();saveSettings();};
+$('settingsCheckUpdates').onclick=()=>send({action:updateAvailable?'installUpdate':'checkUpdate'});
+$('link').addEventListener('input',refreshLinkOptions);
 $('browse').onclick = () => send({ action: 'chooseFolder' });
 $('notifications').onchange = () => { if ($('notifications').checked) send({ action: 'notificationPermission' }); };
 $('setup').onsubmit = event => {
@@ -200,7 +347,7 @@ $('setup').onsubmit = event => {
   if (!online || active || pending) return;
   notice(''); pending = true; render();
   send({ action: 'start', ...Object.fromEntries(['link', 'name', 'destination', 'connections', 'speedCap', 'checksum',
-    'brutal', 'subfolder', 'notifications', 'onePass'].map(id => [id, $(id).type === 'checkbox' ? $(id).checked : $(id).value])) });
+    'brutal', 'subfolder', 'notifications', 'onePass'].map(id => [id, $(id).type === 'checkbox' ? $(id).checked : $(id).value])), folderOutput:$('folderOutput').value });
 };
 $('pause').onclick = () => { paused = true; render(); send({ action: 'pause', id: selected }); };
 $('remove').onclick = () => {
@@ -230,7 +377,7 @@ function resume(changeLink) {
   if (!restart && !changeLink) return launchResume(job.id, false);
   dialogJob = { id: job.id, restart };
   editLink = changeLink;
-  text('resumeTitle', changeLink ? 'Update Dropbox link' : 'Restart download');
+  text('resumeTitle', changeLink ? 'Update share link' : 'Restart download');
   text('resumeDescription', restart ? 'This transfer needs a fresh copy. Any saved partial is kept separately.' :
     'Paste the refreshed link. Saved progress is reused when the source checks match.');
   $('newLinkField').hidden = !changeLink;

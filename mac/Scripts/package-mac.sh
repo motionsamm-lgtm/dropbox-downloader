@@ -55,6 +55,20 @@ bash Build-Mac.command
 app="$PWD/build/GOB.app"
 bin="$app/Contents/MacOS"
 resources="$app/Contents/Resources"
+if [[ -n "${GOB_DRIVE_API_KEY:-}" ]]; then
+  python3 - "$app/Contents/Info.plist" <<'PYKEY'
+import os, plistlib, re, sys
+key = os.environ['GOB_DRIVE_API_KEY']
+if not re.fullmatch(r'AIza[0-9A-Za-z_-]{20,}', key):
+    raise SystemExit('GOB_DRIVE_API_KEY has an unexpected format; refusing to package it.')
+path = sys.argv[1]
+with open(path, 'rb') as stream:
+    data = plistlib.load(stream)
+data['GOBDriveAPIKey'] = key
+with open(path, 'wb') as stream:
+    plistlib.dump(data, stream, fmt=plistlib.FMT_XML)
+PYKEY
+fi
 cp "$workspace/$node_name/bin/node" "$bin/node"
 cp "$workspace/aria2-$aria_version/src/aria2c" "$bin/aria2c"
 mkdir -p "$resources/ThirdParty"

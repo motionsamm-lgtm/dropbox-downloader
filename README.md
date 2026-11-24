@@ -2,7 +2,7 @@
 
 <img src="assets/GOB.png" width="96" height="96" alt="GOB blue doodle goblin on matte black">
 
-A small Dropbox download manager for Windows and macOS, with automatic recovery, saved progress and a goblin appetite for large files.
+A small download manager for Dropbox and public Google Drive links on Windows and macOS, with automatic recovery, saved progress and a goblin appetite for large files.
 
 ## Download GOB
 
@@ -18,11 +18,11 @@ On Windows, run **GOB-Setup.exe**, choose Install, then open **GOB** from Start.
 
 ## Use
 
-Paste a Dropbox file or public folder link, choose where to save it and start. New folder jobs discover the complete file list and download the files separately into their original folder structure, shown as one expandable History entry. No Dropbox account connection is required. If GOB cannot confirm the complete listing, it stops clearly instead of silently downloading a ZIP.
+Paste a Dropbox or public Google Drive file or folder link, choose where to save it and start. GOB detects the provider and file/folder type automatically. New folder jobs discover the complete file list and download files separately into their original folder structure, shown as one History entry; an optional ZIP output assembles those verified files at the end. No Dropbox or Google sign-in is required. Google Drive links must allow “Anyone with the link” access and downloading. Google Docs, Sheets and Slides export is not supported yet. If GOB cannot confirm a complete listing, it stops clearly before starting child transfers.
 
 Use **Pause** to save progress and stop transfers or retries, then **Resume** to continue unfinished files. Completed folder files are kept. **Remove from list** keeps files and archives the job record; **Delete files** asks first and moves only tracked files to Recycle Bin or Trash, leaving unrelated files alone.
 
-Brutal starts enabled and reduces connections after retryable failures. History keeps one evolving log per download, including attempts, recovery, progress and finish times. Servers that refuse ranges may require a file to restart. Existing folder ZIP jobs retain their original one-stream limitations; ZIP progress cannot be converted into separate file checkpoints. Password-protected, sign-in-only and download-disabled folders are not supported by paste-only listing. See [GOB 1.1.0 notes](docs/GOB-1.1.0.md).
+Brutal starts enabled and reduces connections after retryable failures. History keeps one evolving log per download, including attempts, recovery, progress and finish times. Settings lets you switch System/Light/Dark themes, set custom colors, and change transfer defaults. Folder ZIP output verifies each separate transfer before assembling one archive. Servers that refuse ranges may require a file to restart. Password-protected, sign-in-only and download-disabled folders are not supported by paste-only listing.
 
 ## Updates
 
@@ -43,7 +43,7 @@ Older Dropbox Downloader builds need the first GOB installation manually. Subseq
 
 ## Publish a new update
 
-Open Actions, select **Release GOB for Windows and Mac**, and choose **Run workflow**. Enter a new three-part version such as **1.1.1**. Increase it for every release. The workflow stamps the version into both apps, builds all three downloads, runs the checks, and publishes the release with its update manifest only after the platform jobs pass. Existing release tags are kept and cannot be reused by this workflow.
+Open Actions, select **Release GOB for Windows and Mac**, and choose **Run workflow**. Enter a new three-part version, increasing it for every release. The Drive-enabled workflow requires the restricted `GOB_DRIVE_API_KEY` repository Actions secret. The key is limited to the Google Drive API and is included in desktop app binaries to access public links. The workflow stamps the version into both apps, builds all three downloads, runs platform checks, and publishes the release with its update manifest only after the platform jobs pass. Existing release tags are kept and cannot be reused by this workflow.
 
 Source changes should be committed before running a release. Apps learn about new versions when the release is published, rather than from source commits alone.
 
