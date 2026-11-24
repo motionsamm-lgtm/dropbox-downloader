@@ -228,7 +228,7 @@ test('folder ZIP follows the filename-subfolder choice and leaves the archive in
   await f.app.active.task;
   const job=f.job();
   assert.equal(job.status,'Completed',job.message);
-  assert.equal(job.target,path.join(f.destination,'Client Assets','Client Assets.zip'));
+  assert.equal(await fs.realpath(job.target),path.join(await fs.realpath(f.destination),'Client Assets','Client Assets.zip'));
   assert.deepEqual(await fs.readdir(path.join(f.destination,'Client Assets')),['Client Assets.zip']);
 });
 
