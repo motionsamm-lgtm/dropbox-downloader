@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         ready = true
+        send(["type": "settings", "settings": UserDefaults.standard.dictionary(forKey: "GOBUserSettings") ?? [:]])
         for item in events { send(item) }
         events.removeAll()
         if worker == nil { startWorker() }
@@ -163,6 +164,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first?.path
                 ?? fm.homeDirectoryForCurrentUser.path
             process.arguments = [script.path, support.path, executable.path, downloads]
+            var workerEnvironment = ProcessInfo.processInfo.environment
+            if let bundledDriveKey = Bundle.main.object(forInfoDictionaryKey: "GOBDriveAPIKey") as? String,
+               !bundledDriveKey.isEmpty {
+                workerEnvironment["GOB_DRIVE_API_KEY"] = bundledDriveKey
+            }
+            process.environment = workerEnvironment
             process.standardInput = commands
             process.standardOutput = responsePipe
             process.standardError = FileHandle.nullDevice
@@ -244,6 +251,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard message.frameInfo.isMainFrame, let data = message.body as? [String: Any],
               let action = data["action"] as? String else { return }
         switch action {
+        case "saveSettings":
+            guard let settings = data["settings"] as? [String: Any] else { return }
+            UserDefaults.standard.set(settings, forKey: "GOBUserSettings")
         case "chooseFolder":
             let panel = NSOpenPanel()
             panel.canChooseFiles = false

@@ -71,13 +71,21 @@ function Confirm-DownloadedFile([string]$Path, $State) {
         if (($count -lt 1 -and -not ($count -eq 0 -and $State.Length -eq 0)) -or $count -gt 4096) { throw 'Invalid verification checkpoint.' }
         $bytes = Get-FilePrefix $Path $count
         if ($State.Prefix -and (Get-BytesHash $bytes) -cne $State.Prefix) {
-            throw 'Verification failed: the download begins differently from the Dropbox file. The partial was kept.'
+            $provider=if($State.Provider -eq 'google-drive'){'Google Drive'}else{'Dropbox'}
+            throw "Verification failed: the download begins differently from the $provider file. The partial was kept."
         }
         if (-not $State.Prefix -and [Text.Encoding]::UTF8.GetString($bytes) -match '(?is)^\uFEFF?\s*(?:<!doctype\s+html\b|<html\b)') {
             throw 'Verification failed: the saved response is an HTML page. The partial was kept.'
         }
         if ($State.VerifyMp4 -and -not (Test-Mp4Header $bytes)) {
             throw 'Verification failed: the saved file does not have an MP4 header. The partial was kept.'
+        }
+    }
+    if($State.DriveMd5) {
+        if([string]$State.DriveMd5 -notmatch '^[a-fA-F0-9]{32}$'){throw 'Google Drive returned an invalid MD5 verification value. The partial was kept.'}
+        Add-DownloadLog 'Checking the complete file against Google Drive’s MD5 checksum.'
+        if((Get-FileHash -LiteralPath $Path -Algorithm MD5).Hash -cne ([string]$State.DriveMd5).ToUpperInvariant()){
+            throw 'Google Drive’s MD5 check did not match. The partial was kept and was not published.'
         }
     }
     if ($State.Checksum) {
@@ -179,6 +187,7 @@ function Find-RefreshedPartial([string]$Directory, [string]$Name, [string]$Sourc
     if ($matchesFound.Count -gt 1) { throw 'Multiple matching checkpoints exist for this filename. Use the exact link that started the desired download.' }
     if ($matchesFound.Count -eq 1) { return [IO.Path]::GetFileName($matchesFound[0].Path) }
     if ($existing.Count) {
-        throw 'A checkpoint exists, but Dropbox did not prove the refreshed link is the same file. Use the original link or choose a new output name. Saved files were kept.'
+        $provider=if($script:historyState.Provider -eq 'google-drive'){'Google Drive'}else{'Dropbox'}
+        throw "A checkpoint exists, but $provider did not prove the refreshed link is the same file. Use the original link or choose a new output name. Saved files were kept."
     }
 }

@@ -10,8 +10,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("GOB")]
 [assembly: AssemblyProduct("GOB — Grab Our Bytes")]
 [assembly: AssemblyDescription("GOB download manager")]
-[assembly: AssemblyVersion("1.1.4.0")]
-[assembly: AssemblyFileVersion("1.1.4.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 class Launcher {
  [DllImport("shell32.dll", CharSet=CharSet.Unicode)]
  static extern int SetCurrentProcessExplicitAppUserModelID(string id);
@@ -22,13 +22,14 @@ class Launcher {
    string entry = "gui";
    string value = null;
    int guiPid = 0;
+   string requestId = null;
    bool smoke = false;
    if(args.Length > 0) {
     if(args[0] == "--self-test" && args.Length == 1) entry = "test";
     else if(args[0] == "--smoke-test" && args.Length == 1) smoke = true;
     else if(args[0] == "--worker" && args.Length == 2) { entry = "worker"; value = args[1]; }
     else if(args[0] == "--notify" && args.Length == 2) { entry = "notify"; value = args[1]; }
-    else if(args[0] == "--update" && args.Length == 3 && (args[1] == "Check" || args[1] == "Install") && Int32.TryParse(args[2], out guiPid) && guiPid > 0) { entry = "update"; value = args[1]; }
+    else if(args[0] == "--update" && args.Length == 4 && (args[1] == "Check" || args[1] == "Install") && Int32.TryParse(args[2], out guiPid) && guiPid > 0 && System.Text.RegularExpressions.Regex.IsMatch(args[3], "^[a-f0-9]{32}$")) { entry = "update"; value = args[1]; }
     else throw new ArgumentException("Unsupported GOB startup arguments.");
    }
    Application.EnableVisualStyles();
@@ -42,6 +43,11 @@ class Launcher {
     runspace.SessionStateProxy.SetVariable("GOBExecutable", Assembly.GetExecutingAssembly().Location);
     runspace.SessionStateProxy.SetVariable("GobSmokeTest", smoke);
     runspace.SessionStateProxy.SetVariable("GobExitCode", 0);
+    string driveApiKey = "";
+    using(var keyStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("drive-key.txt")) {
+     if(keyStream != null) using(var reader = new StreamReader(keyStream)) driveApiKey = reader.ReadToEnd().Trim();
+    }
+    runspace.SessionStateProxy.SetVariable("GOBDriveApiKey", driveApiKey);
     using(var ps = PowerShell.Create()) {
      ps.Runspace = runspace;
      string source;
@@ -52,7 +58,7 @@ class Launcher {
      ps.AddScript(source);
      if(entry == "worker") ps.AddParameter("HistoryAttempt", value);
      if(entry == "notify") ps.AddParameter("Data", value);
-     if(entry == "update") { ps.AddParameter("Mode", value); ps.AddParameter("GuiPid", guiPid); }
+     if(entry == "update") { ps.AddParameter("Mode", value); ps.AddParameter("GuiPid", guiPid); ps.AddParameter("RequestId", args[3]); }
      ps.Invoke();
      if(ps.InvocationStateInfo.State == PSInvocationState.Failed) {
       var details = String.Join(Environment.NewLine, System.Linq.Enumerable.Select(ps.Streams.Error, e => e.ToString()));

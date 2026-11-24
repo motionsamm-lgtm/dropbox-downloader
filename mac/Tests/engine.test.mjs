@@ -129,6 +129,137 @@ test('classifies links and separates session tokens from file identity', () => {
   assert.equal(checkpointProgress(control(true)).complete, true);
 });
 
+test('downloads a public Google Drive binary through the resumable engine and never logs its API key', async t => {
+  const md5 = createHash('md5').update(file).digest('hex');
+  const calls = [];
+  const f = await fixture(t, {
+    driveApiKey:'restricted-fixture-key',
+    driveClient:{metadata:async(id,key)=>{
+      calls.push(['metadata',id,key]);
+      return {id:'drivefile123',name:'drive-clip.mp4',mimeType:'video/mp4',size:String(file.length),md5Checksum:md5,resourceKey:'rk123',capabilities:{canDownload:true}};
+    }},
+    inspect:async(url,folder,onePass,signal,request,allow,headers,provider)=>{
+      assert.equal(folder,false); assert.equal(provider,'Google Drive');
+      assert.equal(headers['X-Goog-Drive-Resource-Keys'],'drivefile123/rk123');
+      assert.equal(allow(new URL('https://drive.usercontent.googleusercontent.com/download')),true);
+      assert.equal(allow(new URL('https://drive.usercontent.google.com/download')),true);
+      assert.equal(allow(new URL('https://evil.google.com/download')),false);
+      assert.equal(new URL(url).searchParams.get('key'),'restricted-fixture-key');
+      return {...source,total:file.length};
+    },
+    execute:async(_bin,args)=>{
+      calls.push(['aria',args]);
+      assert.ok(args.includes('--header=X-Goog-Drive-Resource-Keys: drivefile123/rk123'));
+      assert.ok(args.at(-1).includes('key=restricted-fixture-key'));
+      await fs.writeFile(working(args),file);
+      await fs.unlink(working(args)+'.aria2').catch(()=>{});
+      return 0;
+    }
+  });
+  await f.app.start({link:'https://drive.google.com/file/d/drivefile123/view?resourcekey=rk123',destination:f.destination,brutal:true});
+  await f.app.active.task;
+  const job=f.job();
+  assert.equal(job.provider,'google-drive');
+  assert.equal(job.status,'Completed',job.message);
+  assert.deepEqual(await fs.readFile(job.target),file);
+  const log=await fs.readFile(f.app.jobPath(job,'download.log.txt'),'utf8');
+  assert.match(log,/Provider: Google Drive/);
+  assert.doesNotMatch(log,/restricted-fixture-key|resourcekey=rk123/);
+  assert.equal(calls.filter(call=>call[0]==='metadata').length,2);
+});
+
+test('downloads a public Google Drive folder as tracked individual files under one parent job', async t => {
+  const md5=createHash('md5').update(file).digest('hex');
+  const metadataIds=[];
+  const driveClient={
+    metadata:async id=>{metadataIds.push(id);return id==='rootdrive123'
+      ? {id,name:'Client Footage',mimeType:'application/vnd.google-apps.folder',resourceKey:'rootrk',capabilities:{canDownload:true}}
+      : {id,name:'take.mp4',mimeType:'video/mp4',size:String(file.length),md5Checksum:md5,resourceKey:'filerk',capabilities:{canDownload:true}}},
+    listPage:async()=>({files:[{id:'filedrive123',name:'take.mp4',mimeType:'video/mp4',size:String(file.length),md5Checksum:md5,resourceKey:'filerk'}]})
+  };
+  const f=await fixture(t,{driveApiKey:'restricted-fixture-key',driveClient,
+    inspect:async(url,folder,_onePass,_signal,_request,allow,headers,provider)=>{
+      assert.equal(provider,'Google Drive');assert.equal(folder,false);
+      assert.equal(headers['X-Goog-Drive-Resource-Keys'],'filedrive123/filerk');
+      assert.equal(allow(new URL('https://drive.usercontent.googleusercontent.com/download')),true);
+      assert.equal(allow(new URL('https://drive.usercontent.google.com/download')),true);
+      assert.match(url,/files%2Ffiledrive123|files\/filedrive123/);
+      return {...source,total:file.length};
+    },execute:success});
+  await f.app.start({link:'https://drive.google.com/drive/folders/rootdrive123?resourcekey=rootrk',destination:f.destination,name:'Project Drive',brutal:true});
+  await f.app.active.task;
+  const job=f.job();
+  assert.equal(job.provider,'google-drive');
+  assert.equal(job.kind,'folder');
+  const children=await f.app.folderChildren(job);
+  const diag=await fs.readFile(f.app.jobPath(job,'download.log.txt'),'utf8');
+  assert.equal(job.status,'Completed',`${job.message}; child: ${children[0]?.message}; ${diag}`);
+  assert.equal(job.completedFiles,1);
+  assert.ok(metadataIds.includes('filedrive123'),'folder child must request its actual Google Drive file ID');
+  assert.deepEqual(await fs.readFile(path.join(job.target,'take.mp4')),file);
+  assert.doesNotMatch(await fs.readFile(f.app.jobPath(job,'download.log.txt'),'utf8'),/restricted-fixture-key|resourcekey=rootrk/);
+});
+
+test('folder ZIP option downloads resumable files, verifies the archive, and leaves one final ZIP', async t => {
+  const archiveBytes=Buffer.concat([Buffer.from('504b0506','hex'),Buffer.alloc(18)]);
+  const f=await fixture(t,{
+    discover:async()=>({files:[{id:'remote1',remote:'take.mp4',local:'take.mp4',url:link,size:file.length}],directories:[]}),
+    execute:success,
+    archiveFolder:async(_folder,archive)=>fs.writeFile(archive,archiveBytes),
+    verifyArchive:async archive=>{assert.deepEqual(await fs.readFile(archive),archiveBytes);return 0;}
+  });
+  await f.app.start({link:'https://www.dropbox.com/scl/fo/share/key',name:'Client Assets',destination:f.destination,folderOutput:'zip',brutal:true});
+  await f.app.active.task;
+  const job=f.job();
+  assert.equal(job.status,'Completed',job.message);
+  assert.equal(job.name,'Client Assets.zip');
+  assert.equal(job.folderOutput,'zip');
+  assert.ok(job.archiveReady.verified);
+  assert.deepEqual(await fs.readdir(f.destination),['Client Assets.zip']);
+  assert.deepEqual(await fs.readFile(job.target),archiveBytes);
+  await f.app.remove(job.id);
+  assert.deepEqual(await fs.readFile(job.target),archiveBytes);
+});
+
+test('folder ZIP follows the filename-subfolder choice and leaves the archive inside that folder', async t => {
+  const archiveBytes=Buffer.concat([Buffer.from('504b0506','hex'),Buffer.alloc(18)]);
+  const f=await fixture(t,{discover:async()=>({files:[],directories:[]}),archiveFolder:async(_folder,archive)=>fs.writeFile(archive,archiveBytes),verifyArchive:async()=>0});
+  await f.app.start({link:'https://www.dropbox.com/scl/fo/share/key',name:'Client Assets',destination:f.destination,folderOutput:'zip',subfolder:true});
+  await f.app.active.task;
+  const job=f.job();
+  assert.equal(job.status,'Completed',job.message);
+  assert.equal(job.target,path.join(f.destination,'Client Assets','Client Assets.zip'));
+  assert.deepEqual(await fs.readdir(path.join(f.destination,'Client Assets')),['Client Assets.zip']);
+});
+
+test('Google Drive folder ZIP uses the same file-verification and archive path', async t => {
+  const archiveBytes=Buffer.concat([Buffer.from('504b0506','hex'),Buffer.alloc(18)]),md5=createHash('md5').update(file).digest('hex');
+  const driveClient={metadata:async id=>id==='rootdrive123'
+    ? {id,name:'Client Footage',mimeType:'application/vnd.google-apps.folder',resourceKey:'rootrk',capabilities:{canDownload:true}}
+    : {id,name:'take.mp4',mimeType:'video/mp4',size:String(file.length),md5Checksum:md5,resourceKey:'filerk',capabilities:{canDownload:true}},
+    listPage:async()=>({files:[{id:'filedrive123',name:'take.mp4',mimeType:'video/mp4',size:String(file.length),md5Checksum:md5,resourceKey:'filerk'}]})};
+  const f=await fixture(t,{driveApiKey:'restricted-fixture-key',driveClient,
+    inspect:async()=>({...source,total:file.length}),execute:success,
+    archiveFolder:async(_folder,archive)=>fs.writeFile(archive,archiveBytes),verifyArchive:async()=>0});
+  await f.app.start({link:'https://drive.google.com/drive/folders/rootdrive123?resourcekey=rootrk',destination:f.destination,name:'Drive Assets',folderOutput:'zip'});
+  await f.app.active.task;
+  const job=f.job();
+  assert.equal(job.status,'Completed',job.message);
+  assert.deepEqual(await fs.readFile(job.target),archiveBytes);
+  assert.deepEqual(await fs.readdir(f.destination),['Drive Assets.zip']);
+});
+
+test('delete files for a completed folder ZIP trashes only the verified archive', async t => {
+  const archiveBytes=Buffer.concat([Buffer.from('504b0506','hex'),Buffer.alloc(18)]), moved=[];
+  const f=await fixture(t,{discover:async()=>({files:[],directories:[]}),archiveFolder:async(_folder,archive)=>fs.writeFile(archive,archiveBytes),verifyArchive:async()=>0});
+  await f.app.start({link:'https://www.dropbox.com/scl/fo/share/key',name:'Client Assets',destination:f.destination,folderOutput:'zip',subfolder:true});
+  await f.app.active.task;
+  const job=f.job();
+  await f.app.remove(job.id,{deleteFiles:true,trash:async file=>{moved.push(file);await fs.unlink(file);}});
+  assert.deepEqual(moved,[job.target]);
+  assert.equal(await fs.readdir(path.join(f.destination,'Client Assets')).then(items=>items.length),0);
+});
+
 test('checks a real HTTP redirect and range response; rejects pages and ignored ranges', async t => {
   const server = createServer((req, res) => {
     if (req.url === '/redirect') { res.writeHead(302, { Location: '/range' }).end(); return; }
@@ -333,4 +464,25 @@ test('pause at the final byte preserves completion proof for a local-only resume
  const job=f.job();assert.equal(job.status,'Paused');assert.ok(job.ready);
  f.app.inspect=async()=>{throw new Error('A late pause must not need the network again.');};
  f.app.launch(job);await f.app.active.task;assert.equal(job.status,'Completed',job.message);
+});
+
+test('a ZIP integrity failure preserves downloaded files and never publishes the archive', async t => {
+  const f = await fixture(t, {
+    discover: async () => ({files: [{remote:'take.mp4', local:'take.mp4', url:link, size:file.length}], directories: []}),
+    execute: success,
+    archiveFolder: async (_folder, archive) => fs.writeFile(archive, Buffer.from('504b0506' + '00'.repeat(18), 'hex')),
+    verifyArchive: async () => 2
+  });
+  await f.app.start({
+    link: 'https://www.dropbox.com/scl/fo/share/key',
+    name: 'Client Assets',
+    destination: f.destination,
+    folderOutput: 'zip'
+  });
+  await f.app.active.task;
+  const job = f.job();
+  assert.equal(job.status, 'Failed');
+  assert.match(job.message, /integrity check/);
+  await assert.rejects(fs.stat(job.target), {code:'ENOENT'});
+  assert.deepEqual(await fs.readFile(path.join(job.folderRoot, 'take.mp4')), file);
 });

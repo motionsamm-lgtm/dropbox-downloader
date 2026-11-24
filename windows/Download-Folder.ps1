@@ -97,6 +97,84 @@ function Get-PublicFolderManifest([string]$Link) {
     return @{Files=@($files.ToArray());Directories=@($directories.ToArray())}
 }
 
+function Test-FolderZip([string]$Path,$Entries) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive=[IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        $actual=@($archive.Entries | Where-Object {-not $_.FullName.EndsWith('/')})
+        if($actual.Count -ne @($Entries).Count){return $false}
+        $expected=@{}
+        foreach($entry in $Entries){$expected[[string]$entry.Local.Replace('\','/').ToLowerInvariant()]=[long]$entry.Size}
+        foreach($item in $actual){$key=[string]$item.FullName.Replace('\','/').ToLowerInvariant();if(-not $expected.ContainsKey($key) -or [long]$item.Length -ne $expected[$key]){return $false};[void]$expected.Remove($key)}
+        return $expected.Count -eq 0
+    } finally {$archive.Dispose()}
+}
+
+function Complete-FolderZip($Job,$Manifest,[string]$RootPath,[string]$ArchivePath,[string]$JobDirectory) {
+    $entries=@($Manifest.Entries)
+    $expected=@{};$expectedDirectories=@{}
+    foreach($entry in $entries){
+        if($entry.Local -match '(^|[/\\])\.\.?([/\\]|$)' -or [IO.Path]::IsPathRooted($entry.Local)){throw 'The folder manifest contains an unsafe path. No ZIP was created.'}
+        $expected[[string]$entry.Local.Replace('\','/').ToLowerInvariant()]=[long]$entry.Size
+        $parts=@($entry.Local.Replace('\','/').Split('/'))
+        for($i=1;$i -lt $parts.Count;$i++){$expectedDirectories[($parts[0..($i-1)] -join '/').ToLowerInvariant()]=$true}
+        $file=Join-Path $RootPath $entry.Local.Replace('/',[IO.Path]::DirectorySeparatorChar)
+        Assert-NoDownloadLinks $file
+        if(-not [IO.File]::Exists($file) -or (Get-Item -LiteralPath $file).Length -ne [long]$entry.Size){throw 'A folder file changed or is missing. No ZIP was created; the other files were kept.'}
+    }
+    $actualFiles=@(Get-ChildItem -LiteralPath $RootPath -File -Recurse -Force)
+    if($actualFiles.Count -ne $expected.Count){throw 'The download folder contains extra or missing files. No ZIP was created; your files were kept.'}
+    foreach($item in $actualFiles){
+        Assert-NoDownloadLinks $item.FullName
+        $relative=$item.FullName.Substring($RootPath.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar).Length).TrimStart([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar).Replace('\','/').ToLowerInvariant()
+        if(-not $expected.ContainsKey($relative) -or [long]$item.Length -ne $expected[$relative]){throw 'The download folder contains extra or changed files. No ZIP was created; your files were kept.'}
+    }
+    foreach($dir in $Manifest.Directories){
+        $relative=[string]$dir.Local.Replace('\','/').ToLowerInvariant()
+        if($relative -match '(^|/)\.\.?(/|$)' -or [IO.Path]::IsPathRooted($relative)){throw 'The folder manifest contains an unsafe directory. No ZIP was created.'}
+        $parts=@($relative.Split('/'))
+        for($i=1;$i -le $parts.Count;$i++){$expectedDirectories[($parts[0..($i-1)] -join '/') ]=$true}
+    }
+    $actualDirectories=@(Get-ChildItem -LiteralPath $RootPath -Directory -Recurse -Force)
+    if($actualDirectories.Count -ne $expectedDirectories.Count){throw 'The download folder contains extra or missing directories. No ZIP was created; your files were kept.'}
+    foreach($dir in @(Get-ChildItem -LiteralPath $RootPath -Directory -Recurse -Force)){
+        Assert-NoDownloadLinks $dir.FullName
+        $relative=$dir.FullName.Substring($RootPath.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar).Length).TrimStart([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar).Replace('\','/')
+        if($relative -match '(^|/)\.\.?(/|$)' -or -not $expectedDirectories.ContainsKey($relative.ToLowerInvariant())){throw 'The download folder contains an unsafe or unexpected directory. No ZIP was created.'}
+    }
+    $total=($entries | Measure-Object -Property Size -Sum).Sum
+    if($null -eq $total){$total=0L}
+    Assert-SaveLocation $Job.Destination ([long]$total) $false
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $jobKey=[IO.Path]::GetFileName($JobDirectory)
+    $temporary="$ArchivePath.GOB-$jobKey.assembling.zip"
+    if([IO.File]::Exists($temporary)){
+        Assert-NoDownloadLinks $temporary
+        [IO.File]::Delete($temporary)
+    }
+    try {
+        [IO.Compression.ZipFile]::CreateFromDirectory($RootPath,$temporary,[IO.Compression.CompressionLevel]::Optimal,$false)
+        if(-not (Test-FolderZip $temporary $entries)){throw 'The assembled ZIP did not match the downloaded folder. The source files were kept.'}
+        Assert-DownloadActive
+        if([IO.File]::Exists($ArchivePath) -or [IO.Directory]::Exists($ArchivePath)){throw 'A file already exists at the ZIP destination. Your downloaded folder was kept.'}
+        $archiveHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash
+        Assert-DownloadActive
+        Write-DownloadState (Join-Path $JobDirectory 'folder-zip-ready.json') @{ Hash = $archiveHash }
+        [IO.File]::Move($temporary,$ArchivePath)
+        $script:historyState.Output=$ArchivePath
+        try {
+            foreach($entry in $entries){[IO.File]::Delete((Join-Path $RootPath $entry.Local.Replace('/',[IO.Path]::DirectorySeparatorChar)))}
+            $dirs=@(Get-ChildItem -LiteralPath $RootPath -Directory -Recurse -Force | Sort-Object { $_.FullName.Length } -Descending)
+            foreach($dir in $dirs){[IO.Directory]::Delete($dir.FullName,$false)}
+            [IO.Directory]::Delete($RootPath,$false)
+        } catch { Add-DownloadLog 'The verified ZIP is saved. The original folder was kept because safe cleanup could not be confirmed.' }
+        return 'The ZIP was verified and saved.'
+    } catch {
+        if([IO.File]::Exists($temporary)){[IO.File]::Delete($temporary)}
+        throw
+    }
+}
+
 function Invoke-FolderDownload($Job,[string]$Link) {
     if ($Job.Checksum) { throw 'Expected SHA-256 applies to a single file. Leave it blank for a folder download.' }
     $directory=[IO.Path]::GetDirectoryName($script:historyAttemptPath)
@@ -106,13 +184,21 @@ function Invoke-FolderDownload($Job,[string]$Link) {
     if([IO.File]::Exists($manifestPath)) {
         $manifest=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
     } else {
-        Add-DownloadLog 'Listing the entire shared folder. Files will download separately; ZIP mode is not used.'
-        $discovered=Get-PublicFolderManifest $Link
+        Add-DownloadLog 'Listing the entire shared folder before starting resumable file transfers.'
+        $provider=if($Job.Provider){[string]$Job.Provider}else{Get-DownloadProvider $Link}
+        $discovered=if($provider -eq 'google-drive'){Get-GoogleDriveFolderManifest $Link}else{Get-PublicFolderManifest $Link}
         Assert-DownloadActive
-        $name=if($Job.Name){Convert-FolderComponent $Job.Name}else{'Dropbox folder'}
-        $rootPath=Join-Path $Job.Destination $name
+        $unsupported=@($discovered.Files | Where-Object {$_.State -in @('Needs export','Unavailable','Skipped')})
+        if($unsupported.Count){$workspace=@($unsupported | Where-Object {$_.State -eq 'Needs export'}).Count;$blocked=$unsupported.Count-$workspace;throw "Folder listing found $($unsupported.Count) item(s) GOB cannot download yet ($workspace Google Workspace document(s), $blocked restricted or repeated folder shortcut(s)). No files were started."}
+        $name=if($Job.Name){Convert-FolderComponent $Job.Name}elseif($discovered.Name){Convert-FolderComponent $discovered.Name}else{'Dropbox folder'}
+        $outputMode=if($Job.FolderOutput -eq 'zip'){'zip'}else{'folder'}
+        $archiveName=if($outputMode -eq 'zip'){if($name -match '\.zip$'){$name}else{"$name.zip"}}else{''}
+        $folderName=if($outputMode -eq 'zip'){[IO.Path]::GetFileNameWithoutExtension($archiveName)}else{$name}
+        $wrapperPath=if($outputMode -eq 'zip' -and $Job.Subfolder){Join-Path $Job.Destination $folderName}else{''}
+        $rootPath=if($wrapperPath){Join-Path $wrapperPath 'Files'}else{Join-Path $Job.Destination $folderName}
+        $archivePath=if($outputMode -eq 'zip'){if($wrapperPath){Join-Path $wrapperPath $archiveName}else{Join-Path $Job.Destination $archiveName}}else{''}
         Assert-NoDownloadLinks $rootPath
-        if(Test-Path -LiteralPath $rootPath){throw 'The folder destination already exists. Choose a new output name.'}
+        if((Test-Path -LiteralPath $rootPath) -or ($wrapperPath -and (Test-Path -LiteralPath $wrapperPath)) -or ($archivePath -and (Test-Path -LiteralPath $archivePath))){throw 'A file or folder already exists at that destination. Choose a new output name.'}
         $entries=@()
         foreach($entry in $discovered.Files) {
             $id=[Guid]::NewGuid().ToString('N')
@@ -121,17 +207,37 @@ function Invoke-FolderDownload($Job,[string]$Link) {
             $relative=$entry.Local.Replace('/',[IO.Path]::DirectorySeparatorChar)
             $target=Join-Path $rootPath $relative
             Assert-NoDownloadLinks $target
-            $secret=ConvertTo-SecureString -String $entry.Url -AsPlainText -Force
+            $childLink=if($provider -eq 'google-drive'){$Link}else{$entry.Url}
+            $secret=ConvertTo-SecureString -String $childLink -AsPlainText -Force
             try{$protected=ConvertFrom-SecureString $secret}finally{$secret.Dispose()}
-            $child=@{ProtectedLink=$protected;DisplayName=$entry.Remote;Created=$Job.Created;Name=[IO.Path]::GetFileName($target);Destination=[IO.Path]::GetDirectoryName($target);FolderZip=$false;AutoDetect=$false;Subfolder=$false;Notifications=$false;Brutal=$Job.Brutal;OnePass=$false;Checksum='';Connections=4;SpeedLimit=$Job.SpeedLimit;ParentWorkerId=$PID;ParentWorkerStart=[string]([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks);ExpectedSize=$entry.Size;ParentFolder=$true}
+            $driveFile=if($provider -eq 'google-drive'){@{Id=$entry.Id;Name=[IO.Path]::GetFileName($target);MimeType=$entry.MimeType;Size=$entry.Size;Md5Checksum=$entry.Md5Checksum;ResourceKey=$entry.ResourceKey}}else{$null}
+            $child=@{ProtectedLink=$protected;Provider=$provider;DriveFile=$driveFile;DisplayName=$entry.Remote;Created=$Job.Created;Name=[IO.Path]::GetFileName($target);Destination=[IO.Path]::GetDirectoryName($target);FolderZip=$false;AutoDetect=$false;Subfolder=$false;Notifications=$false;Brutal=$Job.Brutal;OnePass=$false;Checksum='';Connections=4;SpeedLimit=$Job.SpeedLimit;ParentWorkerId=$PID;ParentWorkerStart=[string]([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks);ExpectedSize=$entry.Size;ParentFolder=$true}
             $child | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $childDirectory 'job.json') -Encoding UTF8
-            $entries+=@{Id=$id;Remote=$entry.Remote;Local=$entry.Local;Size=$entry.Size}
+            $entries+=@{Id=$id;Remote=$entry.Remote;Local=$entry.Local;Size=$entry.Size;DriveFile=$driveFile}
         }
-        $manifest=[pscustomobject]@{Schema=1;Root=$rootPath;Entries=@($entries);Directories=@($discovered.Directories);CreatedRoot=$false}
+        $manifest=[pscustomobject]@{Schema=1;Root=$rootPath;Entries=@($entries);Directories=@($discovered.Directories);CreatedRoot=$false;OutputMode=$outputMode;ArchivePath=$archivePath;WrapperPath=$wrapperPath}
         Write-DownloadState $manifestPath $manifest
         Add-DownloadLog "Complete folder snapshot saved: $($entries.Count) files. Completed files will be kept on Resume."
     }
     $rootPath=[string]$manifest.Root
+    if(-not $manifest.OutputMode){$manifest | Add-Member -NotePropertyName OutputMode -NotePropertyValue 'folder' -Force}
+    $archivePath=[string]$manifest.ArchivePath
+    if($manifest.OutputMode -eq 'zip' -and $archivePath -and [IO.File]::Exists($archivePath)){
+        Assert-NoDownloadLinks $archivePath
+        $proofPath = Join-Path $directory 'folder-zip-ready.json'
+        if (-not [IO.File]::Exists($proofPath)) {
+            throw 'A file already exists at the ZIP destination. Your saved files were kept.'
+        }
+        $proof = Get-Content -LiteralPath $proofPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($proof.Hash -cne (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash) {
+            throw 'The existing ZIP does not match this download. Your saved files were kept.'
+        }
+        $script:historyState.IsFolder=$true;$script:historyState.Output=$archivePath
+        Update-HistoryState 'Completed' 'Completed. The saved ZIP was verified after the previous attempt stopped.'
+        Finish-DownloadLog 'Folder ZIP verified after a previous interruption.'
+        Show-DownloadNotification 'Completed' 'The verified folder ZIP is ready.'
+        return
+    }
     Assert-NoDownloadLinks $rootPath
     if(-not [IO.Directory]::Exists($rootPath)){
         if($manifest.CreatedRoot){throw 'The saved folder moved or is unavailable. Restore it before resuming.'}
@@ -221,9 +327,18 @@ function Invoke-FolderDownload($Job,[string]$Link) {
         } while($active.Count -or ($pending.Count -and -not (Test-DownloadPause)))
         Assert-DownloadActive
         if($finished -ne @($manifest.Entries).Count){throw 'Some folder files did not finish. Resume keeps completed files and retries unfinished ones.'}
-        Update-HistoryState 'Completed' "Completed. All $finished folder files were saved and verified."
-        Finish-DownloadLog "Folder complete. All $finished files were saved and verified."
-        Show-DownloadNotification 'Completed' 'Every file in the folder finished.'
+        if($manifest.OutputMode -eq 'zip'){
+            Update-HistoryState 'Verifying' 'Every file is complete. Assembling and checking the ZIP.'
+            $archiveResult=Complete-FolderZip $Job $manifest $rootPath $archivePath $directory
+            Update-HistoryState 'Completed' "Completed. All $finished files were verified and saved as a ZIP. $archiveResult"
+            Finish-DownloadLog "Folder ZIP complete. All $finished files verified. $archiveResult"
+            Show-DownloadNotification 'Completed' 'The folder ZIP is verified and ready.'
+        } else {
+            $script:historyState.Output=$rootPath
+            Update-HistoryState 'Completed' "Completed. All $finished folder files were saved and verified."
+            Finish-DownloadLog "Folder complete. All $finished files were saved and verified."
+            Show-DownloadNotification 'Completed' 'Every file in the folder finished.'
+        }
     } finally {
         foreach($item in $active.Values) {
             [IO.File]::WriteAllText($item.Attempt+'.pause','pause')

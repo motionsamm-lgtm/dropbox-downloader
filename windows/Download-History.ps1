@@ -125,6 +125,8 @@ function Get-OwnedDownloadFiles([string]$Directory, $State) {
         $partial = ([string]$State.Checkpoint).Substring(0, ([string]$State.Checkpoint).Length - 6)
         $files += @($partial, [string]$State.Checkpoint, ($partial + '.resume.json'))
     }
+    # A normal folder job's Output is a directory, so never treat it as one
+    # deletable file. ZIP folder jobs store the verified archive file here.
     if ($State.Output -and $State.Status -eq 'Completed' -and [IO.File]::Exists([string]$State.Output)) { $files += [string]$State.Output }
     $result = @()
     foreach ($file in ($files | Where-Object { $_ } | Select-Object -Unique)) {
@@ -257,6 +259,9 @@ function Get-DropboxLinkKind([string]$Link) {
     $uri = $null
     if (-not [Uri]::TryCreate($Link.Trim(), [UriKind]::Absolute, [ref]$uri) -or
         $uri.Scheme -ne 'https' -or $uri.UserInfo -or -not $uri.IsDefaultPort) { return }
+    if($uri.Host -in @('drive.google.com','www.drive.google.com','docs.google.com')) {
+        try { $drive=Get-GoogleDriveLinkInfo $Link; return $(if($drive.Folder){'Folder'}else{'File'}) } catch { return }
+    }
     if ($uri.Host -match '^(?:[a-z0-9-]+\.)*dl\.dropboxusercontent\.com$') { return 'File' }
     if ($uri.Host -notin @('dropbox.com','www.dropbox.com')) { return }
     if ($uri.AbsolutePath -match '^/(scl/fi|s)/[^/]+/[^/]+$' -or

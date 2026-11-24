@@ -13,6 +13,7 @@ change('windows/GOB-Setup.iss',r'(#define AppVersion ")[\d.]+(")',lambda m:m[1]+
 change('windows/Dropbox-Downloader.ps1',r'GOB \d+\.\d+\.\d+', 'GOB '+version)
 change('mac/Sources/updates.mjs',r"(export const currentVersion = ')[\d.]+(')",lambda m:m[1]+version+m[2])
 change('mac/Sources/interface.html',r'(font-size:14px">)[\d.]+(</span>)',lambda m:m[1]+version+m[2])
+change('mac/Sources/interface.html',r'(<span id="aboutVersion">)[\d.]+(</span>)',lambda m:m[1]+version+m[2])
 p=Path('mac/Info.plist'); d=plistlib.loads(p.read_bytes());d['CFBundleShortVersionString']=version;d['CFBundleVersion']=version;p.write_bytes(plistlib.dumps(d))
 # Keep the manifest test's sample newer than the release under test.
 p=Path('mac/Tests/updates.test.mjs');text=p.read_text();text=re.sub(r"(const valid=\{version:')[\d.]+(')",lambda m:m[1]+str(int(version.split('.')[0])+1)+'.0.0'+m[2],text);p.write_text(text)
