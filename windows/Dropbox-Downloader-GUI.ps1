@@ -1251,7 +1251,7 @@ try {
     if ($GobSmokeTest) {
         $smokeTimer = New-Object Windows.Forms.Timer
         $smokeTimer.Interval = 700
-        $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close() })
+        $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close(); [Windows.Forms.Application]::Exit() })
         $form.Add_Shown({ $smokeTimer.Start() })
     }
     [void]$form.ShowDialog()
