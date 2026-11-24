@@ -20,7 +20,7 @@ try {
     }
     $manifest=Invoke-RestMethod 'https://github.com/motionsamm-lgtm/dropbox-downloader/releases/latest/download/gob-update.json' -TimeoutSec 20
     if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid update version.' }
-    if ([version]$manifest.version -le [version]'1.2.1') { Save-State @{status='Current';version=$manifest.version;message="GOB $($manifest.version) is up to date."}; exit 0 }
+    if ([version]$manifest.version -le [version]'1.2.2') { Save-State @{status='Current';version=$manifest.version;message="GOB $($manifest.version) is up to date."}; exit 0 }
     $asset=$manifest.assets.windows
     if ($asset.sha256 -notmatch '^[a-f0-9]{64}$' -or $asset.size -le 0 -or $asset.size -gt 314572800 -or
         $asset.url -notmatch '^https://github\.com/motionsamm-lgtm/dropbox-downloader/releases/download/[^/]+/GOB(?:-Setup)?\.exe$') { throw 'Invalid update manifest.' }
