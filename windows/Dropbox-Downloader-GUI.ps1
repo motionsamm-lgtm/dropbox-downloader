@@ -368,6 +368,7 @@ $pause = Add-Control Button 'Pause download' 458 705 176 30
 $removeDownload = Add-Control Button 'Remove from list...' 27 785 150 30
 $deleteDownload = Add-Control Button 'Delete files...' 187 785 130 30
 $folderFiles = Add-Control Button 'Show files' 325 785 125 30
+$settingsButton = Add-Control Button 'Settings' 0 0 98 30
 
 # The original transfer workers and history code stay intact. This only arranges
 # their existing controls into two resizable, themed surfaces.
