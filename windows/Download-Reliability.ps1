@@ -81,11 +81,16 @@ function Confirm-DownloadedFile([string]$Path, $State) {
             throw 'Verification failed: the saved file does not have an MP4 header. The partial was kept.'
         }
     }
-    if($State.DriveMd5) {
-        if([string]$State.DriveMd5 -notmatch '^[a-fA-F0-9]{32}$'){throw 'Google Drive returned an invalid MD5 verification value. The partial was kept.'}
-        Add-DownloadLog 'Checking the complete file against Google Drive’s MD5 checksum.'
-        if((Get-FileHash -LiteralPath $Path -Algorithm MD5).Hash -cne ([string]$State.DriveMd5).ToUpperInvariant()){
-            throw 'Google Drive’s MD5 check did not match. The partial was kept and was not published.'
+    if ($State.DriveMd5) {
+        $expectedDriveMd5 = [string]$State.DriveMd5
+        if ($expectedDriveMd5 -notmatch '^[a-fA-F0-9]{32}$') {
+            throw 'Google Drive returned an invalid MD5 verification value. The partial was kept.'
+        }
+        Add-DownloadLog 'Checking the complete file against Google Drive MD5.'
+        $expectedDriveMd5 = $expectedDriveMd5.ToUpperInvariant()
+        $actualDriveMd5 = (Get-FileHash -LiteralPath $Path -Algorithm MD5).Hash
+        if ($actualDriveMd5 -cne $expectedDriveMd5) {
+            throw 'Google Drive MD5 verification failed. The partial was kept and was not published.'
         }
     }
     if ($State.Checksum) {
