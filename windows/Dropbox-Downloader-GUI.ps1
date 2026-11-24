@@ -989,7 +989,7 @@ $script:updateCheck = $null
 $script:lastUpdateCheck = [DateTime]::MinValue
 $script:lastUpdateMessage = ''
 function Start-GobUpdate([string]$Mode) {
-    $args = '--update {0} {1}' -f $Mode, $PID
+    Remove-Item -LiteralPath $updateStatePath -Force -ErrorAction SilentlyContinue; $args = '--update {0} {1}' -f $Mode, $PID
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $GOBExecutable
     $startInfo.Arguments = $args
@@ -1006,7 +1006,7 @@ $updateButton.Add_Click({
         Start-GobUpdate 'Install'
         $updateButton.Enabled = $false
         $updateButton.Text = 'Downloading update...'
-    } else { Start-GobUpdate 'Check'; $updateButton.Text = 'Checking...' }
+    } else { Start-GobUpdate 'Check'; $updateButton.Text = 'Checking...'; $detail.Text = 'Checking for GOB updates...' }
 })
 $updateTimer = New-Object Windows.Forms.Timer
 $updateTimer.Interval = 1500
@@ -1029,7 +1029,7 @@ $updateTimer.Add_Tick({
             elseif ($updateState.status -in @('Current','Error','Installed')) {
                 $script:gobUpdating = $false
                 $updateButton.Enabled = $true
-                $updateButton.Text = if ($script:updateAvailable) { 'Retry update' } else { 'Check for updates' }
+                $updateButton.Text = if ($script:updateAvailable) { 'Retry update' } else { 'Check for updates' }; $detail.Text = [string]$updateState.message; if ($updateState.details) { $detail.Text += ' ' + [string]$updateState.details }
             }
         }
     } catch { Write-Verbose 'Update status is temporarily unavailable.' }
