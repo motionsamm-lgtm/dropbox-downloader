@@ -24,7 +24,7 @@ function Save-GobSettings {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 trap {
-    $startupError = $_.ToString()
+    $startupError = ($_ | Format-List * -Force | Out-String -Width 4096)
     try {
         $startupDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB'
         [void][IO.Directory]::CreateDirectory($startupDirectory)
