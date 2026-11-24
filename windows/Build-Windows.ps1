@@ -13,7 +13,10 @@ Copy-Item README.txt $portable
 foreach ($script in Get-ChildItem -Filter *.ps1) {
     $parseErrors = $null; $tokens = $null
     [void][Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$parseErrors)
-    if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+    if ($parseErrors.Count) {
+        $details = $parseErrors | ForEach-Object { '{0}:{1}:{2}: {3}' -f $script.Name, $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message }
+        throw ($details -join [Environment]::NewLine)
+    }
 }
 # Assemble readable, fixed application entry points. These are normal embedded
 # application resources, not arbitrary external scripts or encoded commands.
