@@ -24,6 +24,14 @@ function Save-GobSettings {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 trap {
+    $startupError = ($_ | Format-List * -Force | Out-String -Width 4096)
+    try {
+        $startupDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GOB'
+        [void][IO.Directory]::CreateDirectory($startupDirectory)
+        $startupLog = Join-Path $startupDirectory 'startup.log.txt'
+        [IO.File]::AppendAllText($startupLog, ([DateTime]::Now.ToString('o') + ' GUI startup error: ' + $startupError + [Environment]::NewLine))
+    } catch { }
+    if ($GobSmokeTest) { $global:GobExitCode = 1; break }
     [void][Windows.Forms.MessageBox]::Show($_.Exception.Message, 'GOB could not open')
     break
 }
@@ -360,6 +368,7 @@ $pause = Add-Control Button 'Pause download' 458 705 176 30
 $removeDownload = Add-Control Button 'Remove from list...' 27 785 150 30
 $deleteDownload = Add-Control Button 'Delete files...' 187 785 130 30
 $folderFiles = Add-Control Button 'Show files' 325 785 125 30
+$settingsButton = Add-Control Button 'Settings' 0 0 98 30
 
 # The original transfer workers and history code stay intact. This only arranges
 # their existing controls into two resizable, themed surfaces.
@@ -944,7 +953,7 @@ $historyEmpty.Visible = $false
 $rightCard.Controls.Add($historyEmpty)
 
 function Move-ToCard([Windows.Forms.Control]$Control, [Windows.Forms.Control]$Container) {
-    $Control.Parent = $Container
+    [void]$Container.Controls.Add($Control)
 }
 $leftControls = @($linkLabel,$linkBox,$paste,$nameLabel,$nameBox,$folderOutputLabel,$folderOutput,$directoryLabel,$directory,$browse,
     $subfolderOption,$notify,$brutal,$connectionsLabel,$connections,$limitLabel,$limit,$onePass,
@@ -1251,7 +1260,7 @@ try {
     if ($GobSmokeTest) {
         $smokeTimer = New-Object Windows.Forms.Timer
         $smokeTimer.Interval = 700
-        $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close() })
+        $smokeTimer.Add_Tick({ $smokeTimer.Stop(); $form.Close(); [Windows.Forms.Application]::Exit() })
         $form.Add_Shown({ $smokeTimer.Start() })
     }
     [void]$form.ShowDialog()

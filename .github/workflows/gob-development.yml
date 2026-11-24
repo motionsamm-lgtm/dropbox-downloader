@@ -20,6 +20,9 @@ jobs:
         python-version: '3.12'
     - name: Build and test native Windows GUI
       shell: powershell
+      env:
+        # Test-only value; never a usable credential. Release builds use the private Actions secret.
+        GOB_DRIVE_API_KEY: 'AIza0123456789abcdefghij-0123456789'
       run: ./windows/Build-Windows.ps1
     - name: Real engine completion, errors, pause and resume
       shell: powershell
