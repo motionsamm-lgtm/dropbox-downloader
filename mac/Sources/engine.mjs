@@ -288,6 +288,7 @@ export class Downloader {
     this.archiveFolder = archiveFolder || ((folder, archive, signal) => runProcess('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', folder, archive], signal));
     this.verifyArchive = verifyArchive || ((archive, signal) => runProcess('/usr/bin/unzip', ['-tqq', archive], signal));
     this.jobs = new Map();
+    this.removing = new Set();
     this.active = null;
   }
 
@@ -424,8 +425,8 @@ export class Downloader {
   }
 
   runNext() {
-    if (this.active || this.stopping) return;
-    const next = [...this.jobs.values()].sort((a,b) => a.created.localeCompare(b.created)).find(job => job.status === 'Queued');
+    if (!this.aria || this.active || this.stopping) return;
+    const next = [...this.jobs.values()].sort((a,b) => a.created.localeCompare(b.created)).find(job => job.status === 'Queued' && !this.removing.has(job.id));
     if (next) this.launch(next);
   }
 
@@ -472,6 +473,17 @@ export class Downloader {
     const job = this.jobs.get(id);
     if (!job) throw new DownloadError('Select a download from History.');
     if (this.active?.id === id) throw new DownloadError('Pause this download and wait for Paused before removing it.');
+    if (this.removing.has(id)) throw new DownloadError('This download is already being removed.');
+    this.removing.add(id);
+    try {
+      await this.archiveJob(job, deleteFiles, trash);
+    } finally {
+      this.removing.delete(id);
+      this.runNext();
+    }
+  }
+
+  async archiveJob(job, deleteFiles, trash) {
     if (deleteFiles) {
       if (typeof trash !== 'function') throw new DownloadError('Trash is unavailable. No files were removed.');
       const children = job.kind === 'folder' ? await this.folderChildren(job) : [job];
@@ -512,7 +524,7 @@ export class Downloader {
     const archive = path.join(this.root, 'Removed');
     await fs.mkdir(archive, { recursive: true, mode: 0o700 });
     await fs.rename(this.jobPath(job, ''), path.join(archive, job.id));
-    this.jobs.delete(id);
+    this.jobs.delete(job.id);
     this.send();
   }
 

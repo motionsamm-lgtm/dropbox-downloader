@@ -576,3 +576,35 @@ test('348 Drive files keep their identities through transient retries and a part
   assert.equal(transfers.size,348);
   assert.ok([...transfers.values()].every(count=>count===1));
 });
+
+
+test('automatic dispatch skips a queued download while its removal is in progress', async t => {
+  let finishTransfer, finishRemoval, signalRemoving;
+  const transfer = new Promise(resolve => { finishTransfer = resolve; });
+  const removing = new Promise(resolve => { signalRemoving = resolve; });
+  const removal = new Promise(resolve => { finishRemoval = resolve; });
+  const f = await fixture(t, { execute: async (bin,args) => { await transfer; return success(bin,args); } });
+  const first = await f.app.start({link, destination:f.destination, name:'first'});
+  const second = await f.app.start({link, destination:f.destination, name:'second'});
+  const third = await f.app.start({link, destination:f.destination, name:'third'});
+  const log = f.app.log.bind(f.app);
+  f.app.log = async (job,message) => {
+    if (job.id === second && message.startsWith('Removed from History')) {
+      signalRemoving();
+      await removal;
+    }
+    await log(job,message);
+  };
+  const removingJob = f.app.remove(second);
+  await removing;
+  const firstTask = f.app.active.task;
+  finishTransfer();
+  await firstTask;
+  assert.equal(f.app.active.id, third);
+  assert.equal(f.app.jobs.get(first).status,'Completed');
+  const thirdTask = f.app.active.task;
+  finishRemoval();
+  await Promise.all([removingJob,thirdTask]);
+  assert.equal(f.app.jobs.has(second),false);
+  assert.equal((await fs.readdir(f.destination)).length,2);
+});

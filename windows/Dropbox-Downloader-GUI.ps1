@@ -1020,8 +1020,17 @@ function Remove-SelectedDownload([bool]$DeleteFiles) {
     $message = if ($DeleteFiles) {
         "Move $($files.Count) tracked file(s) for this download to Recycle Bin and remove it from History? Other files stay untouched. Empty Recycle Bin later to reclaim space."
     } else { 'Remove this download (including all files in a folder job) from History? Downloaded files and saved progress stay on disk.' }
+    $confirmedAttempt = $selected.Attempt.FullName
     $choice = Show-GobMessage $message 'Remove download' $true
     if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
+    # The history timer can start a queued job while the confirmation is open.
+    Update-DownloadHistory
+    if ($script:gobUpdating -or $selected.Attempt.FullName -ne $confirmedAttempt -or
+        $selected.Status -in @('Starting','Running','Verifying','Pausing') -or
+        (Test-HistoryProcess $selected.State.ProcessId $selected.State.ProcessStart) -or
+        (Test-HistoryProcess $selected.State.EngineId $selected.State.EngineStart)) {
+        throw 'The download changed while confirmation was open. Check its current status and try again.'
+    }
     if ($DeleteFiles) {
         Add-Type -AssemblyName Microsoft.VisualBasic
         foreach ($file in $files) {
