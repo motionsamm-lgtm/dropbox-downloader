@@ -270,6 +270,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
     $script:historyState.Output=$rootPath
     $script:historyState.Children=@()
     $active=@{};$pending=[Collections.Generic.Queue[object]]::new();$states=@{}
+    $savedMetrics=@{}
     $parentStart=[string]([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks)
     foreach($entry in $entries) {
         if($entry.Id -notmatch '^[a-f0-9]{32}$' -or $entry.Local -match '(^|[/\\])\.\.?([/\\]|$)' -or [IO.Path]::IsPathRooted($entry.Local)){throw 'The saved folder manifest contains an unsafe path.'}
@@ -281,7 +282,13 @@ function Invoke-FolderDownload($Job,[string]$Link) {
             Assert-NoDownloadLinks $target
             if(-not [IO.File]::Exists($target) -or (Get-Item -LiteralPath $target).Length -ne [long]$entry.Size){throw 'A completed folder file moved or changed. Inspect the saved folder before resuming.'}
             $states[$entry.Id]=$state
-        } else {$pending.Enqueue($entry)}
+        } else {
+            $checkpoint = if ($state.Checkpoint) { Get-CheckpointProgress $state }
+            if ($checkpoint -and $checkpoint.Total -eq [long]$entry.Size) {
+                $savedMetrics[$entry.Id]=@{Total=$checkpoint.Total;Completed=$checkpoint.Completed;Speed=0}
+            }
+            $pending.Enqueue($entry)
+        }
     }
     $limit = if ($Job.Provider -eq 'google-drive' -or ($entries.Count -gt 0 -and $entries[0].DriveFile)) { 2 } else { 3 }
     $parallel = if ($Job.Brutal) { [Math]::Max(1,[Math]::Min($limit,$entries.Count)) } else { 1 }
@@ -303,6 +310,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 $child.ParentWorkerId=$PID;$child.ParentWorkerStart=$parentStart
                 $child.Connections=if($script:historyState.RecoveryMode){1}elseif($Job.Brutal){[int][Math]::Floor(16 / $parallel)}else{[int]$Job.Connections}
                 $child.Brutal=$Job.Brutal -and -not $script:historyState.RecoveryMode
+                if ($entry.DriveFile) { $child.Connections=1; $child.Brutal=$false }
                 $child.SpeedLimit=if($Job.Brutal){0}else{[int]$Job.SpeedLimit}
                 $child | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $childPath -Encoding UTF8
                 $attempt=Join-Path $childDirectory ('attempt-'+[DateTime]::UtcNow.ToString('yyyyMMddHHmmssfffffff')+'-'+[Guid]::NewGuid().ToString('N')+'.jsonl')
@@ -350,10 +358,16 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 $state=$states[$entry.Id];$total+=[long]$entry.Size
                 $stage=if($state){[string]$state.Status}else{'Queued'}
                 if($stage -eq 'Completed'){$done+=[long]$entry.Size;$finished++}
-                elseif($state.Metrics){$done+=[Math]::Min([long]$entry.Size,[long]$state.Metrics.Completed);if($active.ContainsKey($entry.Id)){$speed+=[long]$state.Metrics.Speed}}
+                $metrics = $state.Metrics
+                if ($state.Checkpoint) { $savedMetrics.Remove($entry.Id) }
+                if (-not $metrics) { $metrics = $savedMetrics[$entry.Id] }
+                if ($stage -ne 'Completed' -and $metrics) {
+                    $done += [Math]::Min([long]$entry.Size,[long]$metrics.Completed)
+                    if ($active.ContainsKey($entry.Id)) { $speed += [long]$metrics.Speed }
+                }
                 if ($stage -in @('Failed','Interrupted')) { $failedCount++ }
                 elseif ($stage -ne 'Completed') { $remaining++ }
-                if ($views.Count -lt 500) { $views+=@{Id=$entry.Id;Name=$entry.Remote;Status=$stage; Size=[long]$entry.Size; Completed=$state.Metrics.Completed; Message=[string]$state.Message} }
+                if ($views.Count -lt 500) { $views+=@{Id=$entry.Id;Name=$entry.Remote;Status=$stage; Size=[long]$entry.Size; Completed=$metrics.Completed; Message=[string]$state.Message} }
             }
             $script:historyState.Children=$views
             $script:historyState.FileCount=@($entries).Count
@@ -362,9 +376,9 @@ function Invoke-FolderDownload($Job,[string]$Link) {
             $script:historyState.PendingFileCount=$remaining
             $script:historyState.Metrics=@{Total=$total;Completed=$done;Speed=$speed;Connections=$active.Count;Estimated=$false}
             $message="$finished/$($entries.Count) verified; $failedCount failed; $remaining unfinished."
-            if ($providerRestricted) { $message += " $restrictionReason" }
-            Update-HistoryState $(if($pausing){'Pausing'}else{'Running'}) $message
-            if(([DateTime]::UtcNow-$lastNote).TotalSeconds -ge 30){Add-DownloadLog ('Folder progress: '+$message+(' {0:N2} of {1:N2} GiB; {2:N1} MiB/s.' -f ($done/1GB),($total/1GB),($speed/1MB)));$lastNote=[DateTime]::UtcNow}
+            $liveMessage = if ($providerRestricted) { "$message $restrictionReason" } else { $message }
+            Update-HistoryState $(if($pausing){'Pausing'}else{'Running'}) $liveMessage
+            if(([DateTime]::UtcNow-$lastNote).TotalSeconds -ge 30){Add-DownloadLog ('Folder progress: '+$liveMessage+(' {0:N2} of {1:N2} GiB; {2:N1} MiB/s.' -f ($done/1GB),($total/1GB),($speed/1MB)));$lastNote=[DateTime]::UtcNow}
             if($active.Count){Start-Sleep -Milliseconds 300}
         } while($active.Count -or ($pending.Count -and -not $providerRestricted -and -not (Test-DownloadPause)))
         Assert-DownloadActive

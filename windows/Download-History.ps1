@@ -427,7 +427,10 @@ function Invoke-RecordedTransfer([string]$Executable, [string[]]$Arguments) {
         $engine.Dispose()
         $script:historyState.EngineId = 0
         $script:historyState.EngineStart = ''
-        $script:historyState.Metrics = $null
+        $saved = Get-CheckpointProgress $script:historyState
+        $script:historyState.Metrics = if ($saved) {
+            @{Total=$saved.Total; Completed=$saved.Completed; Speed=0; Estimated=$true}
+        }
     }
 }
 
