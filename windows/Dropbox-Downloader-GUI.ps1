@@ -312,7 +312,7 @@ $captionButtons.Margin = [Windows.Forms.Padding]::new(0)
 $captionButtons.BackColor = $caption.BackColor
 $caption.Controls.Add($captionButtons)
 foreach ($captionSpec in @(@('×','Close'),@('□','Maximize'),@('—','Minimize'))) {
-    $captionButton = New-Object GobWindow.GobButton
+    $captionButton = New-Object Windows.Forms.Button
     $captionButton.Text = $captionSpec[0]
     $captionButton.Tag = $captionSpec[1]
     $captionButton.Size = [Drawing.Size]::new(46,$script:ContentTop)
@@ -618,6 +618,9 @@ $form.Add_Resize({
 $script:jobs = @{}
 $script:activeJob = $false
 $historyRoot = Get-HistoryDirectory
+if ($GobSmokeTest) {
+    $historyRoot = Join-Path ([IO.Path]::GetTempPath()) ('gob-gui-test-' + [Guid]::NewGuid().ToString('N'))
+}
 [void][IO.Directory]::CreateDirectory($historyRoot)
 
 function Show-GobMessage([string]$Message,[string]$Title='GOB — Grab Our Bytes',[bool]$Confirm=$false) {
@@ -1565,7 +1568,7 @@ $updateTimer.Add_Tick({
 })
 if (-not $GobSmokeTest) { $updateTimer.Start() }
 
-$guiLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderHistoryWindow')
+$guiLock = [Threading.Mutex]::new($false, $(if ($GobSmokeTest) { 'Local\GOBSmokeTestWindow' } else { 'Local\DropboxDownloaderHistoryWindow' }))
 $guiLocked = $false
 try {
     try { $guiLocked = $guiLock.WaitOne(0) }
@@ -1584,8 +1587,18 @@ try {
                 $script:activeJob = $true
                 $linkBox.Text = 'https://www.dropbox.com/scl/fi/example/file.bin'
                 if (-not $start.Enabled -or $start.Text -ne 'Add to queue') { throw 'Valid link could not be added while busy.' }
+                $nameBox.Text = 'First fixture'
+                $start.PerformClick()
+                if ($linkBox.Text -or $nameBox.Text -or $script:jobs.Count -ne 1) { throw 'Add did not persist the file and reset the form.' }
+                $script:activeJob = $true
                 $linkBox.Text = 'https://drive.google.com/drive/folders/example'
                 if (-not $start.Enabled) { throw 'Valid Drive folder did not enable Add.' }
+                $start.PerformClick()
+                if ($script:jobs.Count -ne 2 -or @($script:jobs.Values | Where-Object Status -eq 'Queued').Count -ne 2) {
+                    throw 'The independent jobs were not both retained in the queue.'
+                }
+                $pause.PerformClick()
+                if (@($script:jobs.Values | Where-Object Status -eq 'Paused').Count -ne 1) { throw 'Pause did not affect just the selected job.' }
                 $linkBox.Text = 'not a share link'
                 if ($start.Enabled) { throw 'Invalid link enabled Add.' }
                 $linkBox.Clear()
@@ -1617,4 +1630,12 @@ try {
     $form.Dispose()
     if ($guiLocked) { $guiLock.ReleaseMutex() }
     $guiLock.Dispose()
+    if ($GobSmokeTest) {
+        foreach ($job in $script:jobs.Values) {
+            [IO.File]::Delete((Join-Path $job.Directory 'job.json'))
+            [IO.File]::Delete((Join-Path $job.Directory 'queue.pause'))
+            [IO.Directory]::Delete($job.Directory)
+        }
+        [IO.Directory]::Delete($historyRoot)
+    }
 }

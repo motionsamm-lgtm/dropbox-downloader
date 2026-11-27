@@ -123,6 +123,13 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 [data-preset="brick"] .settings-nav button {border:0;background:transparent}
 [data-preset="brick"] .settings-nav button[aria-current="page"] {background:var(--tint)}
 [data-preset="brick"] .preview-card .primary {pointer-events:none}
+[data-preset="brick"] .job {min-height:41px}
+[data-preset="brick"] .job:hover:not(:disabled) {background:var(--raised)}
+[data-preset="brick"] .job[aria-pressed="true"] {background:var(--tint)}
+[data-preset="brick"] .brutal {border-radius:12px}
+[data-preset="brick"] .toggle input {width:15px;height:15px}
+[data-preset="brick"] #folderChildren {max-height:190px;overflow:auto;padding-inline-start:22px}
+[data-preset="brick"] #folderChildren li {padding:4px 0;overflow-wrap:anywhere}
 .job-meta {display:block;color:var(--muted);font-size:10px;font-weight:500;overflow:hidden;text-overflow:ellipsis}
 #entryHint {margin:8px 0;font-size:12px}
 [data-preset="brick"] button:not(:disabled):hover {background:var(--tint)}
@@ -307,8 +314,11 @@ function usableLink(value) {
     if (['drive.google.com','www.drive.google.com'].includes(url.hostname))
       return /^\/(?:file\/d|drive\/folders)\/[\w-]{5,200}(?:\/|$)/.test(url.pathname) ||
         (['/open','/uc'].includes(url.pathname) && /^[\w-]{5,200}$/.test(url.searchParams.get('id') || ''));
+    const parts = url.pathname.split('/').filter(Boolean);
+    const folder = parts[0] === 'scl' && parts[1] === 'fo' && parts.length >= 4 || parts[0] === 'sh' && parts.length >= 3;
+    if (folder && isFolderLink(value) && (url.searchParams.has('preview') || url.searchParams.has('select'))) return false;
     return (['dropbox.com','www.dropbox.com'].includes(url.hostname) &&
-      /^\/(?:scl\/(?:fi|fo)|s|sh)\/[^/]+\/[^/]+/.test(url.pathname)) ||
+      (folder || parts[0] === 'scl' && parts[1] === 'fi' && parts.length === 4 || parts[0] === 's' && parts.length === 3)) ||
       /^(?:[\w-]+\.)*dl\.dropboxusercontent\.com$/.test(url.hostname);
   } catch { return false; }
 }
