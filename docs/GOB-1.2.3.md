@@ -1,6 +1,6 @@
 # GOB 1.2.3
 
-- Add independent Dropbox and Google Drive links while a transfer is running. Waiting jobs are saved and start in order. Select a job to manage it.
-- The form clears an accepted link and keeps the save folder. The Add button explains what is needed to submit.
-- Queue rows show download sizes when known. Expanded folder rows show individual file sizes and failures.
-- Windows uses rounded controls and a single outline per card. Google Drive reports the failed link check and uses the file’s own resource key during folder downloads.
+- Added a persistent queue for independent Dropbox and Google Drive links. Accepted entries clear the form and keep the save folder. Waiting jobs start in order.
+- Queue rows show provider and size where available. Folder rows show child sizes, progress, and failure details.
+- Refined Brick controls and card outlines on Windows and queue styling on macOS.
+- Folder jobs now use the saved snapshot index for each file. Windows reads the final worker record after exit, and Resume keeps verified files. Drive permission and provider-wide errors are reported without exposing keys or links.

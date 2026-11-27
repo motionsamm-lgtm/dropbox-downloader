@@ -210,4 +210,3 @@ jobs:
       - name: Verify actual 1.0.1 native client through production update feed
         shell: powershell
         run: ./.github/scripts/test-live-windows-update.ps1 -Version $env:GOB_VERSION
-
