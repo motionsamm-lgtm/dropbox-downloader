@@ -330,8 +330,8 @@ function Invoke-FolderDownload($Job,[string]$Link) {
         Assert-DownloadActive
         if($finished -ne @($manifest.Entries).Count){
             $failed = $manifest.Entries | Where-Object { $states[$_.Id].Status -in @('Failed','Interrupted') } | Select-Object -First 1
-            $reason = if ($providerRestricted) { 'Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block.' } elseif ($failed) { $states[$failed.Id].Message } else { 'Some folder files did not finish.' }
-            throw "$reason Resume keeps completed files and retries unfinished ones."
+            $reason = if ($providerRestricted) { 'Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block.' } elseif ($failed) { $states[$failed.Id].Message } else { '' }
+            throw ("Some folder files did not finish. " + ($reason + " Resume keeps completed files and retries unfinished ones.").TrimStart())
         }
         if($manifest.OutputMode -eq 'zip'){
             Update-HistoryState 'Verifying' 'Every file is complete. Assembling and checking the ZIP.'

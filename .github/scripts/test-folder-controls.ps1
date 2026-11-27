@@ -51,7 +51,7 @@ function Set-Attempt($Case) {
 $case=New-Case 'Recovery';Set-Attempt $case
 $env:GOB_FIXTURE_FAIL='b.bin'
 try {Invoke-FolderDownload $case.Job 'unused';throw 'An incomplete folder was incorrectly completed.'}
-catch {if($_.Exception.Message -notlike '*Some folder files did not finish*'){throw}}
+catch {if($_.Exception.Message -notlike '*Some folder files did not finish*Fixture Failed*'){throw}}
 if(@($script:historyState.Children|Where-Object Status -eq 'Completed').Count -ne 1){throw 'Folder completion count was incorrect.'}
 Remove-Item Env:\GOB_FIXTURE_FAIL
 Set-Attempt $case;Invoke-FolderDownload $case.Job 'unused'
