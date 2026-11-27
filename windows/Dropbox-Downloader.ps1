@@ -264,7 +264,7 @@ try {
     }
     $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
-    Write-Host 'GOB 1.2.3'
+    Write-Host 'GOB 1.2.4'
     $folderZip = $false
     $subfolder = $false
     $brutal = $false
