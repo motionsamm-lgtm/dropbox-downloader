@@ -512,3 +512,13 @@ test('accepted links persist independently and the queue continues after pausing
   assert.equal(f.app.jobs.get(second).status, 'Completed');
   assert.equal((await fs.readdir(f.destination)).length, 3);
 });
+
+
+test('reports a Drive automated-query block separately from sharing permissions', async () => {
+  const request = async () => new Response('<html><title>Sorry...</title>automated queries</html>', {
+    status: 403, headers: {'content-type': 'text/html'}
+  });
+  await assert.rejects(probe('https://www.googleapis.com/drive/v3/files/example', false, false,
+    new AbortController().signal, request, () => true, {}, 'Google Drive'),
+    error => error.http === 403 && /blocked automated requests/.test(error.message));
+});

@@ -101,7 +101,16 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
                     $delay = [int][Math]::Max(1, [Math]::Min(121, $seconds))
                 }
             }
-            $problem = if($Provider -eq 'Google Drive' -and $status -eq '403'){'Google Drive denied this file request. Check Anyone with the link access; API quota or key restrictions may also block it.'}else{"$Provider returned HTTP $status, curl $probeExit. No usable byte range."}
+            $driveDetail = if ($Provider -eq 'Google Drive' -and $status -in @('401','403','404','429') -and (Get-Item -LiteralPath $sample).Length -le 65536) {
+                [IO.File]::ReadAllText($sample)
+            }
+            $problem = if ($status -eq '403' -and $driveDetail -match '(?i)automated queries') {
+                'Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block, then resume.'
+            } elseif ($driveDetail -match '(?i)downloadQuotaExceeded|download quota') {
+                "Google Drive download quota exceeded (HTTP $status). Wait for the file quota to reset, then resume."
+            } elseif ($Provider -eq 'Google Drive' -and $status -eq '401') {
+                'Google Drive requires sign-in (HTTP 401). Ask the owner to enable Anyone with the link and viewer downloads.'
+            } elseif($Provider -eq 'Google Drive' -and $status -eq '403'){'Google Drive denied this file request (HTTP 403). Check Anyone with the link access; API quota or key restrictions may also block it.'}else{"$Provider returned HTTP $status, curl $probeExit. No usable byte range."}
             if ($delay -gt 120) { $problem += " $Provider requested a longer wait. Try again later." }
             return @{ Problem = $problem; RetryDelay = $delay }
         }
@@ -687,7 +696,12 @@ try {
     $diagnostic = [regex]::Replace($failure, '(?i)https?://[^\s]+', '[share link]')
     $diagnostic = [regex]::Replace($diagnostic, '(?i)\b[A-Z]:\\[^\r\n]*', '[local path omitted]')
     $diagnostic = $diagnostic -replace '(?i)AIza[A-Za-z0-9_-]+','[API key omitted]'
-    if ($provider -eq 'google-drive') { $safeReason = $diagnostic }
+    if ($provider -eq 'google-drive') {
+        $safeReason = $diagnostic
+        if ($safeReason -match 'blocked automated requests') {
+            if ($script:historyState) { $script:historyState.ProviderRestricted = $true }
+        }
+    }
     Add-DownloadLog ("Reason: " + $diagnostic)
     Finish-DownloadLog $safeReason
     Update-HistoryState 'Failed' $safeReason

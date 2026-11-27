@@ -163,9 +163,22 @@ export async function probe(url, folder, onePass, signal, request = fetch, allow
     }
     if (![200, 206].includes(code)) {
       const wait = retryWait(response.headers.get('retry-after'));
-      await response.body?.cancel();
+      if (provider === 'Google Drive' && code === 403 && /html/i.test(response.headers.get('content-type') || '') && response.body) {
+        const reader = response.body.getReader();
+        let prefix = '';
+        try {
+          while (prefix.length < 4096) {
+            const {value, done} = await reader.read();
+            if (done) break;
+            prefix += Buffer.from(value.subarray(0, 4096 - prefix.length)).toString();
+          }
+        } finally { await reader.cancel().catch(() => {}); }
+        if (/automated queries/i.test(prefix)) {
+          throw new DownloadError('Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block, then resume.', 403);
+        }
+      } else await response.body?.cancel();
       const reason = provider === 'Google Drive' && code === 403
-        ? 'Google Drive denied the file request. Check that Anyone with the link can download it; API quota or key restrictions may also block access.'
+        ? 'Google Drive denied the file request (HTTP 403). Check that Anyone with the link can download it; API quota or key restrictions may also block access.'
         : provider === 'Google Drive' && code === 404
           ? 'Google Drive could not find this file or its owner removed access.'
           : `${provider} returned HTTP ${code} while checking the link.`;
@@ -724,9 +737,9 @@ export class Downloader {
       }
       await this.status(job,'Downloading','Downloading folder files separately.');
       if(job.notifications)this.emit({type:'notification',title:'Folder download started',body:job.name});
-      let cursor=0;
+      let cursor=0, restricted=false;
       const worker = async workerIndex => {
-        while(cursor<children.length&&!signal.aborted&&workerIndex<parallelLimit) {
+        while(!restricted&&cursor<children.length&&!signal.aborted&&workerIndex<parallelLimit) {
           const index=cursor++,child=children[index];
           if(child.status==='Completed') {update();continue;}
           if(parallelLimit===1&&job.brutal) {child.brutal=false;child.folderBudget=1;}
@@ -734,6 +747,7 @@ export class Downloader {
           app.jobs.set(child.id,child);
           app.log=(_child,message)=>this.log(job,`File ${index+1}/${children.length}: ${message}`);
           await app.run(child,null,false,signal);
+          if (child.status === 'Failed' && child.message?.includes('blocked automated requests')) restricted = true;
           update();
         }
       };

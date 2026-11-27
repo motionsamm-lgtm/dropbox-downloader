@@ -180,6 +180,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
     $directory=[IO.Path]::GetDirectoryName($script:historyAttemptPath)
     $manifestPath=Join-Path $directory 'folder-manifest.json'
     $rootPath=$null
+    $providerRestricted = $false
     $children=@()
     if([IO.File]::Exists($manifestPath)) {
         $manifest=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -274,7 +275,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
     try {
         do {
             $pausing=Test-DownloadPause
-            while(-not $pausing -and $active.Count -lt $parallel -and $pending.Count) {
+            while(-not $providerRestricted -and -not $pausing -and $active.Count -lt $parallel -and $pending.Count) {
                 $entry=$pending.Dequeue();$childDirectory=Join-Path (Join-Path $directory 'children') $entry.Id
                 $childPath=Join-Path $childDirectory 'job.json'
                 $child=Get-Content -LiteralPath $childPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -297,6 +298,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 $state=Read-HistoryState $item.Attempt
                 if($state){
                     $states[$id]=$state
+                    if ($state.ProviderRestricted) { $providerRestricted = $true }
                     if($state.RecoveryMode -and -not $script:historyState.RecoveryMode){
                         $parallel=1;$script:historyState.RecoveryMode=$true
                         Add-DownloadLog 'A folder file needed recovery. Reducing the queue to one file and one connection for subsequent transfers.'
@@ -324,11 +326,11 @@ function Invoke-FolderDownload($Job,[string]$Link) {
             Update-HistoryState $(if($pausing){'Pausing'}else{'Running'}) $message
             if(([DateTime]::UtcNow-$lastNote).TotalSeconds -ge 30){Add-DownloadLog ('Folder progress: '+$message+(' {0:N2} of {1:N2} GiB; {2:N1} MiB/s.' -f ($done/1GB),($total/1GB),($speed/1MB)));$lastNote=[DateTime]::UtcNow}
             if($active.Count){Start-Sleep -Milliseconds 300}
-        } while($active.Count -or ($pending.Count -and -not (Test-DownloadPause)))
+        } while($active.Count -or ($pending.Count -and -not $providerRestricted -and -not (Test-DownloadPause)))
         Assert-DownloadActive
         if($finished -ne @($manifest.Entries).Count){
             $failed = $manifest.Entries | Where-Object { $states[$_.Id].Status -in @('Failed','Interrupted') } | Select-Object -First 1
-            $reason = if ($failed) { $states[$failed.Id].Message } else { 'Some folder files did not finish.' }
+            $reason = if ($providerRestricted) { 'Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block.' } elseif ($failed) { $states[$failed.Id].Message } else { 'Some folder files did not finish.' }
             throw "$reason Resume keeps completed files and retries unfinished ones."
         }
         if($manifest.OutputMode -eq 'zip'){

@@ -104,7 +104,7 @@ async function handle(line) {
     output({ type: 'error', message: e instanceof DownloadError || e instanceof GoogleDriveError ? e.message : 'The requested action could not finish.' });
   } finally { app.send(); }
 }
-app.runNext();
+if (aria) app.runNext();
 lines.on('line', line => { queue = queue.then(() => handle(line)); });
 lines.on('close', async () => {
   await queue;
