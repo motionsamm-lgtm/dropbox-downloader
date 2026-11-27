@@ -28,7 +28,7 @@ class Fixture {
   if(job.ContainsKey("DriveFile") && job["DriveFile"]!=null) {
    var drive=(Dictionary<string,object>)job["DriveFile"];
    if((string)drive["Id"]!=Path.GetFileNameWithoutExtension(name) || Convert.ToInt32(job["FolderIndex"])<1 ||
-     Convert.ToInt32(job["FolderIndex"])>Convert.ToInt32(job["FolderCount"])) { Write(attempt,"Failed",output,size); return; }
+     Convert.ToInt32(job["FolderIndex"])>Convert.ToInt32(job["FolderCount"]) || Convert.ToInt32(job["Connections"])!=1 || (bool)job["Brutal"]) { Write(attempt,"Failed",output,size); return; }
   }
   for(int n=0;n<rounds;n++){Thread.Sleep(100);if(File.Exists(attempt+".pause")){Write(attempt,"Paused",output,size);return;}}
   if(Environment.GetEnvironmentVariable("GOB_FIXTURE_BLOCK")=="1" || Environment.GetEnvironmentVariable("GOB_FIXTURE_FAIL")==name){Write(attempt,"Failed",output,size);return;}
@@ -115,6 +115,14 @@ try {
 } finally { Remove-Item Env:\GOB_FIXTURE_BLOCK }
 & {
  $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'windows/Dropbox-Downloader.ps1'),[ref]$null,[ref]$null)
+ $recordFailure=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Set-DriveProbeFailure'},$false)
+ . ([scriptblock]::Create($recordFailure.Extent.Text))
+ $script:historyState=@{}
+ Set-DriveProbeFailure @{HttpStatus='403';Category='provider-blocked';RetryCount=0}
+ if (-not $script:historyState.ProviderRestricted -or $script:historyState.HttpStatus -ne '403' -or
+     $script:historyState.FailureCategory -ne 'provider-blocked' -or $script:historyState.RetryCount -ne 0) {
+   throw 'A blocked media recheck did not retain its diagnostics.'
+ }
  $retry=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-FileProbeWithRetry'},$false)
  . ([scriptblock]::Create($retry.Extent.Text))
  $script:fixtureMediaCodes=[Collections.Generic.Queue[int]]::new()

@@ -754,7 +754,7 @@ export class Downloader {
         while(!restricted&&cursor<children.length&&!signal.aborted&&workerIndex<parallelLimit) {
           const index=cursor++,child=children[index];
           if(child.status==='Completed') {update();continue;}
-          if(parallelLimit===1&&job.brutal) {child.brutal=false;child.folderBudget=1;}
+          if(job.provider==='google-drive'||(parallelLimit===1&&job.brutal)) {child.brutal=false;child.folderBudget=1;}
           const app = new Downloader({root:this.jobPath(job,'children'),aria:this.aria,publish:this.publish,emit:update,inspect:this.inspect,execute:this.execute,sleep:this.sleep,driveApiKey:this.driveApiKey,driveClient:this.driveClient});
           app.jobs.set(child.id,child);
           app.log=(_child,message)=>this.log(job,`File ${index+1}/${children.length}: ${message}`);
@@ -839,7 +839,8 @@ export class Downloader {
       }
       return Boolean(checkpoint);
     };
-    job.metrics = null;
+    const saved = !restart && job.source && (await fileInfo(partial))?.isFile() ? await readCheckpoint(control) : null;
+    job.metrics = saved?.total === job.source?.total ? saved : null;
     job.recovery = false;
     await this.log(job, `--- Attempt started (${this.version}) ---`);
     try {

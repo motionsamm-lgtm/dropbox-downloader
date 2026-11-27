@@ -174,6 +174,14 @@ function Get-FileProbeWithRetry([string]$Curl, [string]$Url, [bool]$VerifyMp4, [
     }
 }
 
+function Set-DriveProbeFailure($Probe) {
+    if (-not $script:historyState) { return }
+    $script:historyState.FailureCategory = $Probe.Category
+    $script:historyState.HttpStatus = $Probe.HttpStatus
+    $script:historyState.RetryCount = $Probe.RetryCount
+    $script:historyState.ProviderRestricted = $Probe.Category -eq 'provider-blocked' -or $Probe.HttpStatus -in @('401','429')
+}
+
 function Assert-SameSource($Expected, $Actual,[string]$Provider='Dropbox') {
     if ($Expected.Size -ne $Actual.Size -or $Expected.Prefix -ne $Actual.Prefix -or
         ($Expected.Tag -and $Actual.Tag -and $Expected.Tag -cne $Actual.Tag)) {
@@ -490,12 +498,7 @@ try {
         }
         if ($null -eq $size) {
             if ($provider -eq 'google-drive' -and $probe.Problem) {
-                if ($script:historyState) {
-                    $script:historyState.FailureCategory = $probe.Category
-                    $script:historyState.HttpStatus = $probe.HttpStatus
-                    $script:historyState.RetryCount = $probe.RetryCount
-                    $script:historyState.ProviderRestricted = $probe.Category -eq 'provider-blocked' -or $probe.HttpStatus -in @('401','429')
-                }
+                Set-DriveProbeFailure $probe
                 throw $probe.Problem
             }
             if ($folderZip) { throw "No download started. Check that $providerName can download this shared folder as a ZIP." }
@@ -663,9 +666,11 @@ try {
             }
             Update-HistoryState 'Running' $retryMessage
             Wait-DownloadRetry $delay
+            $script:downloadStage = 'Rechecking the file link during recovery'
             $freshProbe = Get-FileProbeWithRetry $curl $url $verifyMp4 $driveHeaders $providerName
             if($provider -eq 'google-drive' -and $driveFile.md5Checksum){$freshProbe.Tag='"'+([string]$driveFile.md5Checksum).ToLowerInvariant()+'"'}
             if ($freshProbe.Problem) {
+                if ($provider -eq 'google-drive') { Set-DriveProbeFailure $freshProbe }
                 Add-ProbeLog $freshProbe.Problem $providerName
                 throw "$providerName could not reopen the link. $($freshProbe.Problem) Any saved progress was kept."
             }
@@ -727,7 +732,7 @@ try {
             if ($script:historyState) { $script:historyState.ProviderRestricted = $true }
         }
     }
-    if ($provider -eq 'google-drive') {
+    if ($provider -eq 'google-drive' -and -not $script:historyState.IsFolder) {
         $where = if ($job.FolderIndex) { "file $($job.FolderIndex)/$($job.FolderCount), " } else { '' }
         Add-DownloadLog "Drive failure: $where stage=$script:downloadStage; HTTP=$($script:historyState.HttpStatus); retries=$($script:historyState.RetryCount); category=$($script:historyState.FailureCategory)."
     }

@@ -551,6 +551,7 @@ test('348 Drive files keep their identities through transient retries and a part
     execute:async(bin,args)=>{
       const id=new URL(args.at(-1)).pathname.split('/').at(-1);
       assert.equal(path.basename(option(args,'out')).includes(byId.get(id).name),true);
+      assert.equal(option(args,'split'),'1');
       transfers.set(id,(transfers.get(id)||0)+1);
       maximum=Math.max(maximum,++inFlight);
       try { return await success(bin,args); }
