@@ -13,6 +13,10 @@ class Fixture {
  static JavaScriptSerializer json=new JavaScriptSerializer();
  static void Write(string attempt,string status,string output,long size) {
   var state=new Dictionary<string,object>{{"Status",status},{"Output",output},{"Message","Fixture "+status},{"Updated",DateTime.UtcNow.ToString("o")},{"Metrics",new Dictionary<string,object>{{"Total",size},{"Completed",status=="Completed"?size:0},{"Speed",0}}}};
+  if(status=="Failed" && Environment.GetEnvironmentVariable("GOB_FIXTURE_BLOCK")=="1") {
+   state["HttpStatus"]=403;state["FailureCategory"]="provider-blocked";state["ProviderRestricted"]=true;
+   state["Message"]="Google Drive blocked automated requests (HTTP 403).";
+  }
   File.AppendAllText(attempt,json.Serialize(state)+Environment.NewLine);
  }
  static void Main(string[] args) {
@@ -27,7 +31,7 @@ class Fixture {
      Convert.ToInt32(job["FolderIndex"])>Convert.ToInt32(job["FolderCount"])) { Write(attempt,"Failed",output,size); return; }
   }
   for(int n=0;n<rounds;n++){Thread.Sleep(100);if(File.Exists(attempt+".pause")){Write(attempt,"Paused",output,size);return;}}
-  if(Environment.GetEnvironmentVariable("GOB_FIXTURE_FAIL")==name){Write(attempt,"Failed",output,size);return;}
+  if(Environment.GetEnvironmentVariable("GOB_FIXTURE_BLOCK")=="1" || Environment.GetEnvironmentVariable("GOB_FIXTURE_FAIL")==name){Write(attempt,"Failed",output,size);return;}
   File.WriteAllBytes(output,new byte[size]);Write(attempt,"Completed",output,size);
  }
 }
@@ -98,6 +102,35 @@ try {
 } finally {
  Remove-Item Env:\GOB_FIXTURE_FAST,Env:\GOB_FIXTURE_FAIL -ErrorAction SilentlyContinue
 }
+$blocked=New-Case 'Blocked' $files[0..7] -Drive
+$blocked.Job.Provider='google-drive'
+$env:GOB_FIXTURE_BLOCK='1'
+try {
+ Set-Attempt $blocked
+ try { Invoke-FolderDownload $blocked.Job 'unused'; throw 'Expected provider restriction.' }
+ catch { if ($_.Exception.Message -notlike '*blocked automated requests*') { throw } }
+ if ($script:historyState.FailedFileCount -gt 2 -or $script:historyState.PendingFileCount -lt 6) {
+   throw 'A provider-wide block did not stop new requests.'
+ }
+} finally { Remove-Item Env:\GOB_FIXTURE_BLOCK }
+& {
+ $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'windows/Dropbox-Downloader.ps1'),[ref]$null,[ref]$null)
+ $retry=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-FileProbeWithRetry'},$false)
+ . ([scriptblock]::Create($retry.Extent.Text))
+ $script:fixtureMediaCodes=[Collections.Generic.Queue[int]]::new()
+ $codes=@(429,503,206)
+ foreach($code in $codes){$script:fixtureMediaCodes.Enqueue($code)}
+ function Get-DownloadProbe($Curl,$Url,$VerifyMp4,$FolderZip,$OnePass,$Headers,$Provider) {
+   if($Url -ne 'fixture-file'){throw 'Retry changed the file identity.'}
+   $code=$script:fixtureMediaCodes.Dequeue()
+   if($code -eq 206){return @{Size=512}}
+   return @{Problem="HTTP $code";RetryDelay=2;HttpStatus=$code;Category='transient'}
+ }
+ function Wait-DownloadRetry($Seconds) { if($Seconds -ne 2){throw 'Backoff delay changed.'} }
+ $result=Get-FileProbeWithRetry 'fixture' 'fixture-file' $false @() 'Google Drive'
+ if($result.Size -ne 512 -or $result.RetryCount -ne 2 -or $script:fixtureMediaCodes.Count){throw 'Retry did not recover the same Drive file.'}
+}
+Write-Host 'PASS: provider-wide block stops dispatch and transient 429/503 retry stays on the same file.'
 Write-Host 'PASS: 348 immutable Drive fixture records, bounded indices, exact byte aggregation and file-specific resume.'
 Write-Host 'PASS: folder aggregation, completed-file preservation, failed-file retry, tracked-file deletion and whole-folder pause.'
 $script:historyAttemptPath=$null;$script:historyState=$null
