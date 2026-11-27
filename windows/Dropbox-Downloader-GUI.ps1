@@ -58,6 +58,86 @@ using System.Drawing;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
 namespace GobWindow {
+  public static class GobShape {
+    public static System.Drawing.Drawing2D.GraphicsPath Round(Rectangle r, int radius) {
+      var path = new System.Drawing.Drawing2D.GraphicsPath();
+      int d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
+      if (d < 1) return path;
+      path.AddArc(r.Left,r.Top,d,d,180,90);
+      path.AddArc(r.Right-d,r.Top,d,d,270,90);
+      path.AddArc(r.Right-d,r.Bottom-d,d,d,0,90);
+      path.AddArc(r.Left,r.Bottom-d,d,d,90,90);
+      path.CloseFigure();
+      return path;
+    }
+  }
+  public class GobButton : Button {
+    public Color Outline = Color.Gray, Accent = Color.MediumPurple, Muted = Color.Gray, Tint = Color.Gainsboro;
+    public bool Primary;
+    private bool hovered, pressed;
+    public GobButton() {
+      SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw,true);
+      Cursor = Cursors.Hand;
+      Font = new Font("Segoe UI Semibold", 9);
+    }
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered=true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered=false; Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); pressed=e.Button==MouseButtons.Left; Invalidate(); }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); pressed=false; Invalidate(); }
+    protected override void OnMouseCaptureChanged(EventArgs e) { base.OnMouseCaptureChanged(e); pressed=false; Invalidate(); }
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    protected override void OnPaint(PaintEventArgs e) {
+      e.Graphics.Clear(Parent == null ? SystemColors.Control : Parent is GobCard ? ((GobCard)Parent).Surface : Parent.BackColor);
+      e.Graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+      int lift=Primary && Enabled && !pressed ? 3 : 0;
+      var bounds=new Rectangle(1,1,Width-3-lift,Height-3-lift);
+      if (lift>0) {
+        var shadow=bounds; shadow.Offset(lift,lift);
+        using(var path=GobShape.Round(shadow,9))
+        using(var brush=new SolidBrush(Outline)) e.Graphics.FillPath(brush,path);
+      }
+      Color fill=!Enabled ? Tint : Primary ? (hovered ? ControlPaint.Dark(BackColor,.13f) : BackColor) :
+        pressed ? ControlPaint.Dark(Tint,.08f) : hovered ? Tint : BackColor;
+      using(var path=GobShape.Round(bounds,9))
+      using(var brush=new SolidBrush(fill))
+      using(var pen=new Pen(Focused && Enabled ? Accent : Enabled ? Outline : Muted,Focused ? 2 : 1)) {
+        e.Graphics.FillPath(brush,path);
+        e.Graphics.DrawPath(pen,path);
+      }
+      bounds.Inflate(-5,0);
+      TextRenderer.DrawText(e.Graphics,Text,Font,bounds,Enabled ? ForeColor : Muted,
+        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+  }
+  public class GobCheck : CheckBox {
+    public Color Accent=Color.MediumPurple, Outline=Color.Gray, Muted=Color.Gray, Mark=Color.White;
+    private bool hovered;
+    public GobCheck() {
+      SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw,true);
+      Font=new Font("Segoe UI",9);
+    }
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered=true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered=false; Invalidate(); }
+    protected override void OnPaint(PaintEventArgs e) {
+      e.Graphics.Clear(BackColor);
+      e.Graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+      var box=new Rectangle(2,(Height-15)/2,15,15);
+      using(var path=GobShape.Round(box,4))
+      using(var fill=new SolidBrush(Checked ? Enabled ? Accent : Muted : BackColor))
+      using(var border=new Pen(Enabled && (Focused || hovered || Checked) ? Accent : Muted)) {
+        e.Graphics.FillPath(fill,path);
+        e.Graphics.DrawPath(border,path);
+      }
+      if (Checked) using(var pen=new Pen(Mark,1.6f)) {
+        e.Graphics.DrawLines(pen,new[] {new Point(box.X+3,box.Y+7),new Point(box.X+6,box.Y+10),new Point(box.X+12,box.Y+4)});
+      }
+      var label=new Rectangle(23,0,Math.Max(0,Width-24),Height);
+      TextRenderer.DrawText(e.Graphics,Text,Font,label,Enabled ? ForeColor : Muted,
+        TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+      if (Focused) ControlPaint.DrawFocusRectangle(e.Graphics,label,ForeColor,BackColor);
+    }
+  }
   public class GobCard : Panel {
     public Color Surface = Color.FromArgb(16,17,19);
     public Color Stroke = Color.FromArgb(42,43,46);
@@ -65,7 +145,8 @@ namespace GobWindow {
     public int StrokeWidth = 1;
     public int ShadowDepth = 0;
     public Color ShadowColor = Color.Black;
-    public GobCard() { BackColor=Color.FromArgb(9,9,10); DoubleBuffered=true; SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.ResizeRedraw,true); }
+    public Color FieldStroke=Color.Gray, FieldFocus=Color.MediumPurple, FieldFill=Color.White;
+    public GobCard() { BackColor=Color.FromArgb(9,9,10); DoubleBuffered=true; SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.UserPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.ResizeRedraw,true); BorderStyle=BorderStyle.None; }
     protected override void OnPaintBackground(PaintEventArgs e) {
       e.Graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
       using(var bg=new SolidBrush(BackColor)) e.Graphics.FillRectangle(bg,ClientRectangle);
@@ -86,7 +167,24 @@ namespace GobWindow {
         using(var p=new Pen(Stroke,StrokeWidth)) e.Graphics.DrawPath(p,path);
       }
     }
-    protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); }
+    protected override void OnPaint(PaintEventArgs e) {
+      foreach (Control field in Controls) {
+        if (!field.Visible || !(field is TextBox)) continue;
+        var rect=field.Bounds;
+        rect.Inflate(5,5);
+        e.Graphics.SmoothingMode=System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using(var shape=GobShape.Round(rect,8))
+        using(var fill=new SolidBrush(FieldFill))
+        using(var pen=new Pen(field.Focused ? FieldFocus : FieldStroke,field.Focused ? 2 : 1)) {
+          e.Graphics.FillPath(fill,shape);
+          e.Graphics.DrawPath(pen,shape);
+        }
+      }
+    }
+    protected override void WndProc(ref Message m) {
+      if (m.Msg == 0x85) return;
+      base.WndProc(ref m);
+    }
   }
   public class GobProgressBar : ProgressBar {
     public Color TrackColor=Color.FromArgb(47,48,52);
@@ -264,7 +362,12 @@ $captionTitle.Add_DoubleClick($toggleMaximize)
 $captionSubtitle.Add_DoubleClick($toggleMaximize)
 
 function Add-Control([string]$Type, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height) {
-    $control = if ($Type -eq 'ProgressBar') { New-Object GobWindow.GobProgressBar } else { New-Object "Windows.Forms.$Type" }
+    $control = switch ($Type) {
+        'ProgressBar' { New-Object GobWindow.GobProgressBar }
+        'Button' { New-Object GobWindow.GobButton }
+        'CheckBox' { New-Object GobWindow.GobCheck }
+        default { New-Object "Windows.Forms.$Type" }
+    }
     $control.Text = $Text
     $control.Location = [Drawing.Point]::new($X, ($Y + $script:ContentTop))
     $control.Size = [Drawing.Size]::new($Width, $Height)
@@ -327,6 +430,13 @@ $start.FlatStyle = 'Flat'
 $start.BackColor = [Drawing.Color]::FromArgb(0, 87, 219)
 $start.ForeColor = [Drawing.Color]::White
 
+function Update-AddButton {
+    $valid = (Get-DropboxLinkKind $linkBox.Text) -in @('File','Folder')
+    $start.Enabled = $valid -and -not $script:gobUpdating -and [IO.Directory]::Exists($directory.Text.Trim())
+    $start.Text = if ($script:activeJob) { 'Add to queue' } else { 'Start download' }
+    if ($valid -and -not [IO.Directory]::Exists($directory.Text.Trim())) { $status.Text = 'Choose an existing save folder.' }
+    if ($script:gobUpdating) { $status.Text = 'Wait for the GOB update to finish.' }
+}
 function Update-TransferControls {
     $kind = Get-DropboxLinkKind $linkBox.Text
     $provider = Get-DownloadProvider $linkBox.Text
@@ -355,7 +465,8 @@ function Update-TransferControls {
         $status.Text = 'Link type unclear. Copy a whole folder link or a link to an individual file.'
     } else { $folderOutput.Visible = $false; $folderOutputLabel.Visible = $false; $status.Text = 'Paste a Dropbox or Google Drive link to detect the download type.' }
 }
-$linkBox.Add_TextChanged({ Update-TransferControls; Resize-Layout })
+$linkBox.Add_TextChanged({ Update-TransferControls; Update-AddButton; Resize-Layout })
+$directory.Add_TextChanged({ Update-TransferControls; Update-AddButton })
 $folderOutput.Add_SelectedIndexChanged({ $script:userSettings.folderOutput=if($folderOutput.SelectedIndex -eq 1){'zip'}else{'folder'}; Save-GobSettings; Update-TransferControls; Resize-Layout })
 $brutal.Add_CheckedChanged({ $script:userSettings.brutal=$brutal.Checked; Save-GobSettings; Update-TransferControls })
 $onePass.Add_CheckedChanged({ Update-TransferControls })
@@ -374,6 +485,7 @@ $history.HideSelection = $false
 [void]$history.Columns.Add('Progress', 78)
 [void]$history.Columns.Add('Speed', 92)
 [void]$history.Columns.Add('ETA', 71)
+[void]$history.Columns.Add('Size', 82)
 [void]$history.Columns.Add('Started', 95)
 $progress = Add-Control ProgressBar '' 26 642 608 12
 $detail = Add-Control Label '' 26 660 608 38
@@ -412,18 +524,18 @@ function Resize-Layout {
     $fieldButton = 82
     $leftHeading.Location = [Drawing.Point]::new(22, 20)
     $linkLabel.Location = [Drawing.Point]::new(22, 62)
-    $linkBox.Location = [Drawing.Point]::new(22, 84)
-    $linkBox.Size = [Drawing.Size]::new([Math]::Max(180, $inner - $fieldButton - 9), 35)
+    $linkBox.Location = [Drawing.Point]::new(27, 84)
+    $linkBox.Size = [Drawing.Size]::new([Math]::Max(180, $inner - $fieldButton - 19), 35)
     $paste.Location = [Drawing.Point]::new(($leftWidth - 22 - $fieldButton), 83)
     $paste.Size = [Drawing.Size]::new($fieldButton, 36)
     $nameLabel.Location = [Drawing.Point]::new(22, 137)
-    $nameBox.Location = [Drawing.Point]::new(22, 160)
+    $nameBox.Location = [Drawing.Point]::new(27, 160)
     $folderDetected = (Get-DropboxLinkKind $linkBox.Text) -eq 'Folder'
-    $nameBox.Size = [Drawing.Size]::new($(if($folderDetected){$inner-195}else{$inner}), 35)
+    $nameBox.Size = [Drawing.Size]::new($(if($folderDetected){$inner-205}else{$inner-10}), 35)
     if($folderDetected){$folderOutputLabel.Location=[Drawing.Point]::new(($leftWidth-22-180),137);$folderOutputLabel.Size=[Drawing.Size]::new(180,21);$folderOutput.Location=[Drawing.Point]::new(($leftWidth-22-180),160);$folderOutput.Size=[Drawing.Size]::new(180,35)}
     $directoryLabel.Location = [Drawing.Point]::new(22, 211)
-    $directory.Location = [Drawing.Point]::new(22, 234)
-    $directory.Size = [Drawing.Size]::new([Math]::Max(180, $inner - $fieldButton - 9), 35)
+    $directory.Location = [Drawing.Point]::new(27, 234)
+    $directory.Size = [Drawing.Size]::new([Math]::Max(180, $inner - $fieldButton - 19), 35)
     $browse.Location = [Drawing.Point]::new(($leftWidth - 22 - $fieldButton), 233)
     $browse.Size = [Drawing.Size]::new($fieldButton, 36)
     $subfolderOption.Location = [Drawing.Point]::new(22, 291)
@@ -442,8 +554,8 @@ function Resize-Layout {
     $onePass.Location = [Drawing.Point]::new(22, 472)
     $onePass.Size = [Drawing.Size]::new($inner, 27)
     $checksumLabel.Location = [Drawing.Point]::new(22, 517)
-    $checksum.Location = [Drawing.Point]::new(22, 540)
-    $checksum.Size = [Drawing.Size]::new($inner, 35)
+    $checksum.Location = [Drawing.Point]::new(27, 540)
+    $checksum.Size = [Drawing.Size]::new(($inner-10), 35)
     $status.Location = [Drawing.Point]::new(22, 594)
     $status.Size = [Drawing.Size]::new($inner, 33)
     $start.Location = [Drawing.Point]::new(22, ($panelHeight - 60))
@@ -487,13 +599,13 @@ function Resize-Layout {
     $folderFiles.Location = [Drawing.Point]::new(300, $row3Y)
     $folderFiles.Size = [Drawing.Size]::new([Math]::Max(104, $rightInner - 280), 34)
 
-    $columnFractions = @(0.23,0.15,0.13,0.14,0.12)
+    $columnFractions = @(0.21,0.15,0.115,0.115,0.10,0.13)
     $columnTotal = 0
-    for ($i=0; $i -lt 5; $i++) {
+    for ($i=0; $i -lt $columnFractions.Count; $i++) {
         $history.Columns[$i].Width = [Math]::Max(50, [int]($rightInner * $columnFractions[$i]))
         $columnTotal += $history.Columns[$i].Width
     }
-    $history.Columns[5].Width = [Math]::Max(65, $rightInner - $columnTotal - 4)
+    $history.Columns[6].Width = [Math]::Max(65, $rightInner - $columnTotal - 4)
 }
 $form.Add_Resize({
     Resize-Layout
@@ -506,6 +618,9 @@ $form.Add_Resize({
 $script:jobs = @{}
 $script:activeJob = $false
 $historyRoot = Get-HistoryDirectory
+if ($GobSmokeTest) {
+    $historyRoot = Join-Path ([IO.Path]::GetTempPath()) ('gob-gui-test-' + [Guid]::NewGuid().ToString('N'))
+}
 [void][IO.Directory]::CreateDirectory($historyRoot)
 
 function Show-GobMessage([string]$Message,[string]$Title='GOB — Grab Our Bytes',[bool]$Confirm=$false) {
@@ -514,9 +629,9 @@ function Show-GobMessage([string]$Message,[string]$Title='GOB — Grab Our Bytes
     if(-not $p){$p=Get-GobPalette}
     $d.BackColor=$p.background;$d.ForeColor=$p.text
     $label=New-Object Windows.Forms.Label;$label.Text=$Message;$label.Location=[Drawing.Point]::new(20,18);$label.Size=[Drawing.Size]::new(400,86);$label.ForeColor=$p.text;$d.Controls.Add($label)
-    if($Confirm){$yes=New-Object Windows.Forms.Button;$yes.Text='Yes';$yes.DialogResult=[Windows.Forms.DialogResult]::Yes;$yes.Location=[Drawing.Point]::new(252,118);$yes.Size=[Drawing.Size]::new(78,30);$d.Controls.Add($yes);$no=New-Object Windows.Forms.Button;$no.Text='No';$no.DialogResult=[Windows.Forms.DialogResult]::No;$no.Location=[Drawing.Point]::new(342,118);$no.Size=[Drawing.Size]::new(78,30);$d.Controls.Add($no);$d.AcceptButton=$yes;$d.CancelButton=$no
-    }else{$ok=New-Object Windows.Forms.Button;$ok.Text='OK';$ok.DialogResult=[Windows.Forms.DialogResult]::OK;$ok.Location=[Drawing.Point]::new(330,118);$ok.Size=[Drawing.Size]::new(90,30);$d.Controls.Add($ok);$d.AcceptButton=$ok;$d.CancelButton=$ok}
-    foreach($b in $d.Controls|Where-Object{$_ -is [Windows.Forms.Button]}){Set-GobButton $b;$b.BackColor=$p.button;$b.ForeColor=$p.text;$b.FlatAppearance.BorderColor=$p.border}
+    if($Confirm){$yes=New-Object GobWindow.GobButton;$yes.Text='Yes';$yes.DialogResult=[Windows.Forms.DialogResult]::Yes;$yes.Location=[Drawing.Point]::new(252,118);$yes.Size=[Drawing.Size]::new(78,30);$d.Controls.Add($yes);$no=New-Object GobWindow.GobButton;$no.Text='No';$no.DialogResult=[Windows.Forms.DialogResult]::No;$no.Location=[Drawing.Point]::new(342,118);$no.Size=[Drawing.Size]::new(78,30);$d.Controls.Add($no);$d.AcceptButton=$yes;$d.CancelButton=$no
+    }else{$ok=New-Object GobWindow.GobButton;$ok.Text='OK';$ok.DialogResult=[Windows.Forms.DialogResult]::OK;$ok.Location=[Drawing.Point]::new(330,118);$ok.Size=[Drawing.Size]::new(90,30);$d.Controls.Add($ok);$d.AcceptButton=$ok;$d.CancelButton=$ok}
+    foreach($b in $d.Controls|Where-Object{$_ -is [Windows.Forms.Button]}){Set-GobButton $b;Set-GobControlPalette $b $p;$b.BackColor=$p.button;$b.ForeColor=$p.text;$b.FlatAppearance.BorderColor=$p.border}
     try{return $d.ShowDialog($form)}finally{$d.Dispose()}
 }
 function Show-UiError([string]$Message) { [void](Show-GobMessage $Message 'GOB — Grab Our Bytes' $false) }
@@ -542,14 +657,22 @@ function Update-SelectedDownload {
     }
 
     $state = $selected.State
+    $selectedRow = $history.SelectedItems[0]
+    if ($selectedRow.Name.Contains(':') -and $selectedRow.ToolTipText) {
+        $detail.Text = $selectedRow.ToolTipText
+        $progress.Style = 'Continuous'
+        $progress.Value = 0
+        $openLog.Enabled = $state.SummaryPath -and [IO.File]::Exists($state.SummaryPath)
+        return
+    }
     $stage = $selected.Status
     $resume.Enabled = (-not $script:gobUpdating -and -not $script:activeJob -and $stage -in @('Paused','Failed','Interrupted','File found'))
     $folderFiles.Enabled = $selected.Job.FolderMode -eq 'files'
     $folderFiles.Text = if ($selected.ShowChildren) { 'Hide files' } else { 'Show files' }
-    $pause.Enabled = $stage -in @('Starting','Running','Verifying')
+    $pause.Enabled = $stage -in @('Queued','Starting','Running','Verifying')
     $pause.Text = if ($stage -eq 'Pausing') { 'Saving progress...' } elseif ($selected.Job.FolderMode -eq 'files') { 'Pause folder' } else { 'Pause download' }
-    $removeDownload.Enabled = -not $script:activeJob -and -not $script:gobUpdating
-    $deleteDownload.Enabled = -not $script:activeJob -and -not $script:gobUpdating
+    $removeDownload.Enabled = $stage -notin @('Starting','Running','Verifying','Pausing') -and -not $script:gobUpdating
+    $deleteDownload.Enabled = $removeDownload.Enabled -and $null -ne $selected.Attempt
     $openLog.Enabled = $state.SummaryPath -and [IO.File]::Exists($state.SummaryPath)
     $markDone.Enabled = -not $script:activeJob -and $stage -eq 'File found'
     $metrics = $selected.Metrics
@@ -569,7 +692,7 @@ function Update-SelectedDownload {
         $progress.Value = [int][Math]::Floor($metrics.Percent)
         $detail.Text = "$($metrics.ProgressText)   |   $($metrics.SpeedText)   |   ETA $($metrics.EtaText)"
         if ($metrics.Estimated) { $detail.Text += '  (from saved pieces)' }
-        if ($state.IsFolder) { $detail.Text += '   |   ' + $state.CompletedFileCount + '/' + $state.FileCount + ' files'; if ($state.FileCount -gt 500) { $detail.Text += ' (first 500 rows shown)' } }
+        if ($state.IsFolder) { $detail.Text += '   |   ' + $state.CompletedFileCount + '/' + $state.FileCount + ' verified; ' + [int]$state.FailedFileCount + ' failed; ' + [int]$state.PendingFileCount + ' unfinished'; if ($state.FileCount -gt 500) { $detail.Text += ' (first 500 rows shown)' } }
         if ($state.RecoveryMode) { $detail.Text += '   |   Recovery: 1 connection' }
     } else {
         $fraction = if ($stage -eq 'Verifying') { 99.9 } else { $selected.LastPercent }
@@ -580,10 +703,18 @@ function Update-SelectedDownload {
             'A final file exists. Resume checks for a saved verification record, or use Mark complete after checking the file.'
         } elseif ($stage -eq 'Interrupted') {
             'Interrupted. Resume from History with the original link and settings.'
-        } else { [string]$state.Message }
+        } elseif ($stage -eq 'Queued') { 'Waiting for the current download to finish.' }
+        else { [string]$state.Message }
     }
 }
 
+function Format-GobSize($Bytes) {
+    if ($null -eq $Bytes) { return 'Unknown' }
+    if ($Bytes -ge 1GB) { return ('{0:N1} GiB' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N1} MiB' -f ($Bytes / 1MB)) }
+    if ($Bytes -ge 1KB) { return ('{0:N1} KiB' -f ($Bytes / 1KB)) }
+    return "$Bytes B"
+}
 function Update-FolderRows($Record) {
     if (-not $Record.ChildRows) { $Record.ChildRows = @{} }
     $wanted = @()
@@ -595,11 +726,17 @@ function Update-FolderRows($Record) {
             if (-not $Record.ChildRows.ContainsKey($key)) {
                 $row = [Windows.Forms.ListViewItem]::new('  ' + [string]$child.Name)
                 $row.Name = $key
-                foreach ($column in 1..5) { [void]$row.SubItems.Add('') }
+                foreach ($column in 1..6) { [void]$row.SubItems.Add('') }
                 [void]$history.Items.Insert($Record.Row.Index + $offset, $row)
                 $Record.ChildRows[$key] = $row
             }
             $Record.ChildRows[$key].SubItems[1].Text = [string]$child.Status
+            $Record.ChildRows[$key].SubItems[5].Text = Format-GobSize $child.Size
+            $Record.ChildRows[$key].ToolTipText = [string]$child.Message
+            if ($child.Status -eq 'Completed') { $Record.ChildRows[$key].SubItems[2].Text = '100%' }
+            elseif ($child.Size -gt 0 -and $null -ne $child.Completed) {
+                $Record.ChildRows[$key].SubItems[2].Text = '{0:N1}%' -f (100 * [double]$child.Completed / $child.Size)
+            }
             $offset++
         }
     }
@@ -621,7 +758,7 @@ function Update-DownloadHistory {
             catch { continue }
             $row = [Windows.Forms.ListViewItem]::new([string]$job.DisplayName)
             $row.Name = $entry.Name
-            foreach ($column in 1..4) { [void]$row.SubItems.Add('') }
+            foreach ($column in 1..5) { [void]$row.SubItems.Add('') }
             [void]$row.SubItems.Add([DateTime]::Parse($job.Created).ToLocalTime().ToString('dd MMM, HH:mm'))
             [void]$history.Items.Insert(0, $row)
             $script:jobs[$entry.Name] = @{ Job = $job; Directory = $entry.FullName; Row = $row }
@@ -639,6 +776,9 @@ function Update-DownloadHistory {
         }
         $record.Attempt = $last
         $record.Status = Get-HistoryStatus $record.State
+        if (-not $last -and $record.Job.Queued) {
+            $record.Status = if ([IO.File]::Exists((Join-Path $entry.FullName 'queue.pause'))) { 'Paused' } else { 'Queued' }
+        }
         $workerAlive = (Test-HistoryProcess $record.State.ProcessId $record.State.ProcessStart) -or
             (Test-HistoryProcess $record.State.EngineId $record.State.EngineStart)
         if ($last -and [IO.File]::Exists($last.FullName + '.pause') -and
@@ -698,13 +838,20 @@ function Update-DownloadHistory {
                 $record.LastPercent = $metrics.Percent
             }
         }
+        $size = $record.State.Size
+        if ($null -eq $size) { $size = $record.State.Metrics.Total }
+        if ($null -eq $size -and $record.Status -eq 'Completed' -and -not $record.State.IsFolder -and [IO.File]::Exists($record.State.Output)) {
+            $size = (Get-Item -LiteralPath $record.State.Output -ErrorAction SilentlyContinue).Length
+        }
+        $record.Row.SubItems[5].Text = Format-GobSize $size
+        $record.Row.ToolTipText = "$(if($record.Job.Provider -eq 'google-drive'){'Google Drive'}else{'Dropbox'}): $($record.State.Message)"
         $record.Row.SubItems[2].Text = $progressText
         $record.Row.SubItems[3].Text = $speedText
         $record.Row.SubItems[4].Text = $etaText
         Update-FolderRows $record
-        if ($record.Status -in @('Running', 'Starting','Verifying','Pausing')) { $script:activeJob = $true }
+        if ($workerAlive -or $record.Status -in @('Running', 'Starting','Verifying','Pausing')) { $script:activeJob = $true }
     }
-    $start.Enabled = -not $script:activeJob -and -not $script:gobUpdating
+    Update-AddButton
     $historyEmpty.Visible = ($history.Items.Count -eq 0)
     Update-SelectedDownload
 }
@@ -752,13 +899,22 @@ function Start-HistoryAttempt([string]$Directory) {
     }
 }
 
+function Start-NextQueuedDownload {
+    if ($script:activeJob -or $script:gobUpdating -or $GobSmokeTest) { return }
+    $next = $script:jobs.Values | Where-Object Status -eq 'Queued' | Sort-Object { $_.Job.Created } | Select-Object -First 1
+    if ($next) { Start-HistoryAttempt $next.Directory }
+}
+
 $start.Add_Click({
     try {
-        if ($script:activeJob) { return }
+        if ($script:gobUpdating) { throw 'Wait for the GOB update to finish.' }
         if (-not $linkBox.Text.Trim()) { throw 'Paste a Dropbox or Google Drive link first.' }
         if (-not [IO.Directory]::Exists($directory.Text.Trim())) { throw 'Choose an existing save folder.' }
         $kind = Get-DropboxLinkKind $linkBox.Text
         if (-not $kind) { throw 'The link type could not be detected. Paste a Dropbox or Google Drive file or folder share link.' }
+        if ($checksum.Text.Trim() -and ($kind -eq 'Folder' -or $checksum.Text.Trim() -notmatch '^[0-9a-fA-F]{64}$')) {
+            throw 'Enter a 64-character SHA-256 for a single file, or leave it blank.'
+        }
         $provider = Get-DownloadProvider $linkBox.Text
         $key = [Guid]::NewGuid().ToString('N')
         $jobDirectory = Join-Path $historyRoot $key
@@ -780,6 +936,7 @@ $start.Add_Click({
         $job = @{
             ProtectedLink = $protectedLink
             Provider = $provider
+            Queued = $true
             DisplayName = $display
             Created = [DateTime]::UtcNow.ToString('o')
             Name = $nameBox.Text.Trim()
@@ -799,7 +956,15 @@ $start.Add_Click({
         $temporary = Join-Path $jobDirectory 'job.tmp'
         $job | ConvertTo-Json -Compress | Set-Content -LiteralPath $temporary -Encoding UTF8
         [IO.File]::Move($temporary, (Join-Path $jobDirectory 'job.json'))
-        Start-HistoryAttempt $jobDirectory
+        $linkBox.Clear()
+        $nameBox.Clear()
+        $checksum.Clear()
+        $onePass.Checked = $false
+        $linkBox.Focus()
+        Update-DownloadHistory
+        $script:jobs[$key].Row.Selected = $true
+        $script:jobs[$key].Row.EnsureVisible()
+        Start-NextQueuedDownload
     } catch { Show-UiError $_.Exception.Message }
 })
 $resume.Add_Click({
@@ -831,6 +996,11 @@ $markDone.Add_Click({
 $pause.Add_Click({
     try {
         $selected = Get-SelectedDownload
+        if ($selected.Status -eq 'Queued') {
+            [IO.File]::WriteAllText((Join-Path $selected.Directory 'queue.pause'), 'paused')
+            Update-DownloadHistory
+            return
+        }
         if (-not $selected.Attempt -or $selected.Status -notin @('Starting','Running','Verifying')) { return }
         [IO.File]::WriteAllText($selected.Attempt.FullName + '.pause', [DateTime]::UtcNow.ToString('o'))
         Update-DownloadHistory
@@ -838,16 +1008,29 @@ $pause.Add_Click({
 })
 function Remove-SelectedDownload([bool]$DeleteFiles) {
     Update-DownloadHistory
-    if ($script:activeJob -or $script:gobUpdating) { throw 'Pause the active download and wait for Paused before removing downloads.' }
+    if ($script:gobUpdating) { throw 'Wait until the update finishes.' }
     $selected = Get-SelectedDownload
     if (-not $selected) { return }
+    if ($selected.Status -in @('Starting','Running','Verifying','Pausing') -or
+        (Test-HistoryProcess $selected.State.ProcessId $selected.State.ProcessStart)) {
+        throw 'Pause this download and wait for it to stop before removing it.'
+    }
     $files = @()
     if ($DeleteFiles) { $files = @(Get-OwnedDownloadFiles $selected.Directory $selected.State) }
     $message = if ($DeleteFiles) {
         "Move $($files.Count) tracked file(s) for this download to Recycle Bin and remove it from History? Other files stay untouched. Empty Recycle Bin later to reclaim space."
     } else { 'Remove this download (including all files in a folder job) from History? Downloaded files and saved progress stay on disk.' }
+    $confirmedAttempt = $selected.Attempt.FullName
     $choice = Show-GobMessage $message 'Remove download' $true
     if ($choice -ne [Windows.Forms.DialogResult]::Yes) { return }
+    # The history timer can start a queued job while the confirmation is open.
+    Update-DownloadHistory
+    if ($script:gobUpdating -or $selected.Attempt.FullName -ne $confirmedAttempt -or
+        $selected.Status -in @('Starting','Running','Verifying','Pausing') -or
+        (Test-HistoryProcess $selected.State.ProcessId $selected.State.ProcessStart) -or
+        (Test-HistoryProcess $selected.State.EngineId $selected.State.EngineStart)) {
+        throw 'The download changed while confirmation was open. Check its current status and try again.'
+    }
     if ($DeleteFiles) {
         Add-Type -AssemblyName Microsoft.VisualBasic
         foreach ($file in $files) {
@@ -912,7 +1095,7 @@ $history.Add_SelectedIndexChanged({ Update-SelectedDownload })
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 1000
 $timer.Add_Tick({
-    try { Update-DownloadHistory }
+    try { Update-DownloadHistory; Start-NextQueuedDownload }
     catch { $detail.Text = 'History refresh failed. The background transfer can still continue.' }
 })
 $form.Add_FormClosing({
@@ -974,6 +1157,11 @@ $rightCard.Controls.Add($historyEmpty)
 
 function Move-ToCard([Windows.Forms.Control]$Control, [Windows.Forms.Control]$Container) {
     [void]$Container.Controls.Add($Control)
+    if ($Control -is [Windows.Forms.TextBox]) {
+        $Control.BorderStyle = 'None'
+        $Control.Add_Enter({ $this.Parent.Invalidate() })
+        $Control.Add_Leave({ $this.Parent.Invalidate() })
+    }
 }
 $leftControls = @($linkLabel,$linkBox,$paste,$nameLabel,$nameBox,$folderOutputLabel,$folderOutput,$directoryLabel,$directory,$browse,
     $subfolderOption,$notify,$brutal,$connectionsLabel,$connections,$limitLabel,$limit,$onePass,
@@ -983,6 +1171,25 @@ $rightControls = @($heading,$history,$progress,$detail,$resume,$openLog,$markDon
 foreach ($control in $leftControls) { Move-ToCard $control $leftCard }
 foreach ($control in $rightControls) { Move-ToCard $control $rightCard }
 
+function Set-GobControlPalette($control, $palette, [bool]$primary = $false) {
+    if ($control -is [GobWindow.GobButton]) {
+        $control.Primary = $primary
+        $control.Accent = $palette.bar
+        $control.Outline = $palette.border
+        $control.Muted = $palette.muted
+        $control.Tint = $palette.selected
+        $control.BackColor = if ($primary) { $palette.bar } else { $palette.button }
+        $control.ForeColor = if ($primary) { $palette.primaryText } else { $palette.text }
+        $control.Invalidate()
+    } elseif ($control -is [GobWindow.GobCheck]) {
+        $control.Accent = $palette.bar
+        $control.Muted = $palette.muted
+        $control.Mark = $palette.primaryText
+        $control.ForeColor = $palette.text
+        $control.BackColor = $palette.card
+        $control.Invalidate()
+    }
+}
 function Set-GobButton([Windows.Forms.Button]$Button, [bool]$Primary = $false) {
     $Button.UseVisualStyleBackColor = $false
     $Button.FlatStyle = [Windows.Forms.FlatStyle]::Flat
@@ -1017,7 +1224,7 @@ foreach ($control in $leftControls + $rightControls) {
         $control.BackColor = [Drawing.Color]::FromArgb(28,29,32)
         $control.ForeColor = [Drawing.Color]::FromArgb(242,242,245)
         $control.Font = [Drawing.Font]::new('Segoe UI', 10)
-        $control.BorderStyle = [Windows.Forms.BorderStyle]::FixedSingle
+        $control.BorderStyle = if ($control -is [Windows.Forms.TextBox]) { 'None' } else { 'FixedSingle' }
     } elseif ($control -is [Windows.Forms.CheckBox]) {
         $control.UseVisualStyleBackColor = $false
         $control.BackColor = [Drawing.Color]::FromArgb(16,17,19)
@@ -1032,6 +1239,7 @@ $history.ForeColor = [Drawing.Color]::FromArgb(228,229,233)
 $history.BorderStyle = [Windows.Forms.BorderStyle]::None
 $history.OwnerDraw = $true
 $history.GridLines = $false
+$history.ShowItemToolTips = $true
 $history.Font = [Drawing.Font]::new('Segoe UI', 9)
 $history.Add_DrawColumnHeader({
     param($sender,$e)
@@ -1129,6 +1337,9 @@ function Apply-GobTheme {
             $c.BackColor=$p.background
             $c.Surface=$p.card
             $c.Stroke=$p.border
+            $c.FieldStroke=$p.muted
+            $c.FieldFocus=$p.bar
+            $c.FieldFill=$p.raised
             $c.CornerRadius=if($p.brick){19}else{14}
             $c.StrokeWidth=if($p.brick){2}else{1}
             $c.ShadowDepth=if($p.brick){5}else{0}
@@ -1152,6 +1363,9 @@ function Apply-GobTheme {
         elseif($c -is [GobWindow.GobProgressBar]){$c.TrackColor=$p.header;$c.BarColor=$p.bar;$c.Invalidate()}
         elseif($c -is [Windows.Forms.ListView]){$c.BackColor=$p.stripe;$c.ForeColor=$p.text;$c.Invalidate()}
     }
+    foreach ($c in $leftControls + $rightControls) {
+        Set-GobControlPalette $c $p ($c -eq $start)
+    }
     if($history){$history.Invalidate()}
     if($script:settingsDialog -and -not $script:settingsDialog.IsDisposed){
         $script:settingsDialog.BackColor=$p.background;$script:settingsDialog.ForeColor=$p.text
@@ -1162,7 +1376,7 @@ function Apply-GobTheme {
             elseif($c -is [Windows.Forms.Label]){$c.BackColor=[Drawing.Color]::Transparent;$c.ForeColor=$p.text}
             elseif($c -is [Windows.Forms.CheckBox]){$c.BackColor=$p.card;$c.ForeColor=$p.text}
             elseif($c -is [Windows.Forms.ComboBox]){$c.BackColor=$p.raised;$c.ForeColor=$p.text}
-            elseif($c -is [Windows.Forms.Button]){$c.BackColor=$p.button;$c.ForeColor=$p.text;$c.FlatAppearance.BorderColor=$p.border;$c.FlatAppearance.MouseOverBackColor=$p.raised}
+            Set-GobControlPalette $c $p ($c.Tag -eq 'Primary')
         }
     }
 }
@@ -1195,26 +1409,27 @@ function Show-GobSettings {
     $i=0
     foreach($spec in @(@('Accent color','accent'),@('Panel surface','surface'),@('Text color','text'))) {
         $y=112+$i*58;$label=New-Object Windows.Forms.Label;$label.Text=$spec[0];$label.Location=[Drawing.Point]::new(20,$y+7);$label.Size=[Drawing.Size]::new(145,24);$appearance.Controls.Add($label)
-        $choose=New-Object Windows.Forms.Button;$choose.Text='Choose color';$choose.Tag=$spec[1];$choose.Location=[Drawing.Point]::new(180,$y);$choose.Size=[Drawing.Size]::new(125,34);$appearance.Controls.Add($choose)
+        $choose=New-Object GobWindow.GobButton;$choose.Text='Choose color';$choose.Tag=$spec[1];$choose.Location=[Drawing.Point]::new(180,$y);$choose.Size=[Drawing.Size]::new(125,34);$appearance.Controls.Add($choose)
         $value=New-Object Windows.Forms.Label;$value.Text=[string]$script:userSettings[$spec[1]];$value.Location=[Drawing.Point]::new(320,$y+7);$value.Size=[Drawing.Size]::new(150,24);$appearance.Controls.Add($value);$colorControls[$spec[1]]=$value
         $choose.Add_Click({param($sender,$eventArgs);$key=[string]$sender.Tag;$picker=New-Object Windows.Forms.ColorDialog;$current=[string]$script:userSettings[$key];if($current -match '^#[0-9a-fA-F]{6}$'){$picker.Color=[Drawing.ColorTranslator]::FromHtml($current)};if($picker.ShowDialog($dialog) -eq [Windows.Forms.DialogResult]::OK){$hex='#'+$picker.Color.R.ToString('X2')+$picker.Color.G.ToString('X2')+$picker.Color.B.ToString('X2');$script:userSettings[$key]=$hex;$colorControls[$key].Text=$hex;$preset.SelectedIndex=1;Apply-GobTheme};$picker.Dispose()})
         $i++
     }
     $appearanceHint=New-Object Windows.Forms.Label;$appearanceHint.Text='Custom colors apply to GOB Matte.';$appearanceHint.Location=[Drawing.Point]::new(20,294);$appearanceHint.Size=[Drawing.Size]::new(500,42);$appearance.Controls.Add($appearanceHint)
-    $sub=New-Object Windows.Forms.CheckBox;$sub.Text='Create a named subfolder for folder downloads';$sub.Checked=[bool]$script:userSettings.folderSubfolder;$sub.Location=[Drawing.Point]::new(20,25);$sub.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($sub)
-    $not=New-Object Windows.Forms.CheckBox;$not.Text='Show download notifications';$not.Checked=[bool]$script:userSettings.notifications;$not.Location=[Drawing.Point]::new(20,67);$not.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($not)
-    $br=New-Object Windows.Forms.CheckBox;$br.Text='Use Brutal mode by default';$br.Checked=[bool]$script:userSettings.brutal;$br.Location=[Drawing.Point]::new(20,109);$br.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($br)
+    $sub=New-Object GobWindow.GobCheck;$sub.Text='Create a named subfolder for folder downloads';$sub.Checked=[bool]$script:userSettings.folderSubfolder;$sub.Location=[Drawing.Point]::new(20,25);$sub.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($sub)
+    $not=New-Object GobWindow.GobCheck;$not.Text='Show download notifications';$not.Checked=[bool]$script:userSettings.notifications;$not.Location=[Drawing.Point]::new(20,67);$not.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($not)
+    $br=New-Object GobWindow.GobCheck;$br.Text='Use Brutal mode by default';$br.Checked=[bool]$script:userSettings.brutal;$br.Location=[Drawing.Point]::new(20,109);$br.Size=[Drawing.Size]::new(440,28);$downloads.Controls.Add($br)
     $outLabel=New-Object Windows.Forms.Label;$outLabel.Text='Default folder output';$outLabel.Location=[Drawing.Point]::new(20,162);$outLabel.Size=[Drawing.Size]::new(145,24);$downloads.Controls.Add($outLabel)
     $out=New-Object Windows.Forms.ComboBox;$out.DropDownStyle='DropDownList';[void]$out.Items.AddRange(@('Normal folder','One ZIP file'));$out.SelectedIndex=if($script:userSettings.folderOutput -eq 'zip'){1}else{0};$out.Location=[Drawing.Point]::new(180,157);$out.Size=[Drawing.Size]::new(210,30);$downloads.Controls.Add($out)
     $dlNote=New-Object Windows.Forms.Label;$dlNote.Text='These are the starting defaults. You can still change options before each transfer.';$dlNote.Location=[Drawing.Point]::new(20,214);$dlNote.Size=[Drawing.Size]::new(500,48);$downloads.Controls.Add($dlNote)
     $aboutText=New-Object Windows.Forms.Label;$aboutText.Text="GOB — Grab Our Bytes`r`nDownload manager for Dropbox and public Google Drive links.`r`nGoogle Drive requires Anyone with the link access; GOB does not sign in.";$aboutText.Location=[Drawing.Point]::new(20,24);$aboutText.Size=[Drawing.Size]::new(500,100);$about.Controls.Add($aboutText)
-    $reset=New-Object Windows.Forms.Button;$reset.Text='Reset appearance';$reset.Location=[Drawing.Point]::new(24,394);$reset.Size=[Drawing.Size]::new(130,32);$dialog.Controls.Add($reset)
+    $reset=New-Object GobWindow.GobButton;$reset.Text='Reset appearance';$reset.Location=[Drawing.Point]::new(24,394);$reset.Size=[Drawing.Size]::new(130,32);$dialog.Controls.Add($reset)
     $reset.Add_Click({$script:userSettings.appearance='light';$script:userSettings.preset='brick';$preset.SelectedIndex=0;$script:userSettings.accent='#4f86e8';$script:userSettings.surface='';$script:userSettings.text='';$mode.SelectedItem='Light';foreach($k in @('accent','surface','text')){$colorControls[$k].Text=[string]$script:userSettings[$k]};Apply-GobTheme})
-    $cancel=New-Object Windows.Forms.Button;$cancel.Text='Cancel';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$cancel.Location=[Drawing.Point]::new(386,394);$cancel.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($cancel)
-    $save=New-Object Windows.Forms.Button;$save.Text='Save';$save.Tag='Primary';$save.DialogResult=[Windows.Forms.DialogResult]::OK;$save.Location=[Drawing.Point]::new(478,394);$save.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($save);$dialog.AcceptButton=$save;$dialog.CancelButton=$cancel
+    $cancel=New-Object GobWindow.GobButton;$cancel.Text='Cancel';$cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel;$cancel.Location=[Drawing.Point]::new(386,394);$cancel.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($cancel)
+    $save=New-Object GobWindow.GobButton;$save.Text='Save';$save.Tag='Primary';$save.DialogResult=[Windows.Forms.DialogResult]::OK;$save.Location=[Drawing.Point]::new(478,394);$save.Size=[Drawing.Size]::new(82,32);$dialog.Controls.Add($save);$dialog.AcceptButton=$save;$dialog.CancelButton=$cancel
     $p=$script:themePalette;$dialog.BackColor=$p.background;$dialog.ForeColor=$p.text;$tabs.BackColor=$p.card;$script:settingsDialog=$dialog
     foreach($page in @($appearance,$downloads,$about)){ $page.BackColor=$p.card;foreach($c in $page.Controls){if($c -is [Windows.Forms.Label]){$c.ForeColor=$p.text;$c.BackColor=[Drawing.Color]::Transparent}elseif($c -is [Windows.Forms.CheckBox]){$c.ForeColor=$p.text;$c.BackColor=$p.card}elseif($c -is [Windows.Forms.ComboBox]){$c.BackColor=$p.raised;$c.ForeColor=$p.text}elseif($c -is [Windows.Forms.Button]){Set-GobButton $c;$c.BackColor=$p.button;$c.ForeColor=$p.text;$c.FlatAppearance.BorderColor=$p.border;$c.FlatAppearance.MouseOverBackColor=$p.raised}} }
     foreach($b in @($reset,$cancel,$save)){Set-GobButton $b ($b -eq $save);$b.BackColor=if($b -eq $save){$p.bar}else{$p.button};$b.ForeColor=if($b -eq $save){[Drawing.Color]::White}else{$p.text};$b.FlatAppearance.BorderColor=$p.border}
+    Apply-GobTheme
     $preset.Add_SelectedIndexChanged({
         $script:userSettings.preset=if($this.SelectedIndex -eq 0){'brick'}else{'matte'}
         Apply-GobTheme
@@ -1362,7 +1577,7 @@ $updateTimer.Add_Tick({
 })
 if (-not $GobSmokeTest) { $updateTimer.Start() }
 
-$guiLock = [Threading.Mutex]::new($false, 'Local\DropboxDownloaderHistoryWindow')
+$guiLock = [Threading.Mutex]::new($false, $(if ($GobSmokeTest) { 'Local\GOBSmokeTestWindow' } else { 'Local\DropboxDownloaderHistoryWindow' }))
 $guiLocked = $false
 try {
     try { $guiLocked = $guiLock.WaitOne(0) }
@@ -1377,6 +1592,26 @@ try {
         $smokeTimer.Add_Tick({
             $smokeTimer.Stop()
             try {
+                $activeBefore = $script:activeJob
+                $script:activeJob = $true
+                $linkBox.Text = 'https://www.dropbox.com/scl/fi/example/file.bin'
+                if (-not $start.Enabled -or $start.Text -ne 'Add to queue') { throw 'Valid link could not be added while busy.' }
+                $nameBox.Text = 'First fixture'
+                $start.PerformClick()
+                if ($linkBox.Text -or $nameBox.Text -or $script:jobs.Count -ne 1) { throw 'Add did not persist the file and reset the form.' }
+                $script:activeJob = $true
+                $linkBox.Text = 'https://drive.google.com/drive/folders/example'
+                if (-not $start.Enabled) { throw 'Valid Drive folder did not enable Add.' }
+                $start.PerformClick()
+                if ($script:jobs.Count -ne 2 -or @($script:jobs.Values | Where-Object Status -eq 'Queued').Count -ne 2) {
+                    throw 'The independent jobs were not both retained in the queue.'
+                }
+                $pause.PerformClick()
+                if (@($script:jobs.Values | Where-Object Status -eq 'Paused').Count -ne 1) { throw 'Pause did not affect just the selected job.' }
+                $linkBox.Text = 'not a share link'
+                if ($start.Enabled) { throw 'Invalid link enabled Add.' }
+                $linkBox.Clear()
+                $script:activeJob = $activeBefore
                 $appearanceBefore = $script:userSettings.appearance
                 $presetBefore = $script:userSettings.preset
                 $script:settingsSmokeExercised = $false
@@ -1404,4 +1639,12 @@ try {
     $form.Dispose()
     if ($guiLocked) { $guiLock.ReleaseMutex() }
     $guiLock.Dispose()
+    if ($GobSmokeTest) {
+        foreach ($job in $script:jobs.Values) {
+            [IO.File]::Delete((Join-Path $job.Directory 'job.json'))
+            [IO.File]::Delete((Join-Path $job.Directory 'queue.pause'))
+            [IO.Directory]::Delete($job.Directory)
+        }
+        [IO.Directory]::Delete($historyRoot)
+    }
 }

@@ -34,6 +34,25 @@ function Invoke-GoogleDriveJson([string]$Uri,[string]$ItemId,[string]$ResourceKe
             $code=0;if($response){try{$code=[int]$response.StatusCode}catch{}}
             $detail=''
             if($response){try{$reader=[IO.StreamReader]::new($response.GetResponseStream());$raw=$reader.ReadToEnd();$reader.Dispose();$detail=$raw}catch{}}
+            $reason=''
+            if($detail -match '^\s*\{'){
+                try {
+                    $parsed=$detail | ConvertFrom-Json -ErrorAction Stop
+                    $reason=@($parsed.error.errors)[0].reason
+                    if($reason -notmatch '^[a-zA-Z][a-zA-Z0-9_]{0,63}$'){$reason=''}
+                } catch {$reason=''}
+            }
+            $category=if($detail -match '(?i)automated queries'){'provider-blocked'}
+                elseif($code -in @(408,429,500,502,503,504) -or $detail -match '(?i)rateLimitExceeded|userRateLimitExceeded|quotaExceeded'){'transient'}
+                elseif($code -in @(401,403,404)){'permission'}else{'permanent'}
+            if($script:historyState){
+                $script:historyState.HttpStatus=$code
+                $script:historyState.RetryCount=$attempt
+                $script:historyState.FailureCategory=$category
+                $script:historyState.ProviderRestricted=($category -eq 'provider-blocked' -or $code -eq 401 -or ($code -eq 429 -and $attempt -eq 3))
+            }
+            Add-DownloadLog "Drive API attempt $($attempt+1)/4: HTTP $code; category=$category; reason=$reason."
+            if($category -eq 'provider-blocked'){throw 'Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block, then resume.'}
             $isQuota=$detail -match '(?i)rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded|quotaExceeded|too many requests'
             if($isQuota){
                 if($attempt -eq 3){throw 'Google Drive is limiting requests or the project quota is exhausted. Wait a little, then resume.'}

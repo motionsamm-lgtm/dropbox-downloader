@@ -486,3 +486,125 @@ test('a ZIP integrity failure preserves downloaded files and never publishes the
   await assert.rejects(fs.stat(job.target), {code:'ENOENT'});
   assert.deepEqual(await fs.readFile(path.join(job.folderRoot, 'take.mp4')), file);
 });
+
+
+test('accepted links persist independently and the queue continues after pausing a waiting job', async t => {
+  let unblock;
+  const gate = new Promise(resolve => { unblock = resolve; });
+  const f = await fixture(t, { execute: async (bin,args) => { await gate; return success(bin,args); } });
+  const first = await f.app.start({link, destination:f.destination, name:'first'});
+  const second = await f.app.start({link, destination:f.destination, name:'second'});
+  const third = await f.app.start({link, destination:f.destination, name:'third'});
+  const firstTask = f.app.active.task;
+  assert.equal(f.app.active.id, first);
+  assert.equal(f.app.jobs.get(second).status, 'Queued');
+  await f.app.pause(second);
+  assert.equal(f.app.jobs.get(second).status, 'Paused');
+  unblock();
+  await firstTask;
+  assert.equal(f.app.active.id, third);
+  await f.app.active.task;
+  assert.equal(f.app.jobs.get(first).status, 'Completed');
+  assert.equal(f.app.jobs.get(third).status, 'Completed');
+  assert.equal(f.app.jobs.get(second).status, 'Paused');
+  f.app.launch(f.app.jobs.get(second));
+  await f.app.active.task;
+  assert.equal(f.app.jobs.get(second).status, 'Completed');
+  assert.equal((await fs.readdir(f.destination)).length, 3);
+});
+
+
+test('reports a Drive automated-query block separately from sharing permissions', async () => {
+  const request = async () => new Response('<html><title>Sorry...</title>automated queries</html>', {
+    status: 403, headers: {'content-type': 'text/html'}
+  });
+  await assert.rejects(probe('https://www.googleapis.com/drive/v3/files/example', false, false,
+    new AbortController().signal, request, () => true, {}, 'Google Drive'),
+    error => error.http === 403 && /blocked automated requests/.test(error.message));
+});
+
+test('348 Drive files keep their identities through transient retries and a partial folder resume', async t => {
+  const files = Array.from({length:348}, (_,i)=>({
+    id:'fixture'+String(i+1).padStart(3,'0'), name:'file'+String(i+1).padStart(3,'0')+'.bin',
+    mimeType:'application/octet-stream', size:String(file.length), resourceKey:'key'+String(i+1).padStart(3,'0')
+  }));
+  const byId = new Map(files.map(item=>[item.id,item]));
+  const attempts = new Map(), transfers = new Map();
+  let inFlight=0, maximum=0, allowLast=false;
+  const driveClient = {
+    metadata:async id=>byId.get(id) || {id,name:'Folder',mimeType:'application/vnd.google-apps.folder'},
+    listPage:async()=>({files})
+  };
+  const f=await fixture(t,{driveClient,driveApiKey:'fixture-only',
+    inspect:async(url,folder,onePass,signal,_fetch,_allow,headers)=>{
+      const id = new URL(url).pathname.split('/').at(-1);
+      assert.ok(byId.has(id));
+      assert.equal(headers['X-Goog-Drive-Resource-Keys'],id+'/'+byId.get(id).resourceKey);
+      const count=(attempts.get(id)||0)+1;
+      attempts.set(id,count);
+      const code = id==='fixture001' && count===1 ? 429 :
+        id==='fixture002' && count===1 ? 503 :
+        id==='fixture348' && !allowLast ? 403 : 206;
+      if (code!==206) return probe(url,folder,onePass,signal,async()=>new Response(null,{status:code}),()=>true,{},'Google Drive');
+      return source;
+    },
+    execute:async(bin,args)=>{
+      const id=new URL(args.at(-1)).pathname.split('/').at(-1);
+      assert.equal(path.basename(option(args,'out')).includes(byId.get(id).name),true);
+      transfers.set(id,(transfers.get(id)||0)+1);
+      maximum=Math.max(maximum,++inFlight);
+      try { return await success(bin,args); }
+      finally { inFlight--; }
+    }});
+  await f.app.start({link:'https://drive.google.com/drive/folders/rootfixture',destination:f.destination,brutal:true});
+  await f.app.active.task;
+  const job=f.job();
+  assert.equal(job.status,'Failed');
+  assert.equal(job.completedFiles,347);
+  assert.equal(job.metrics.total,file.length*348);
+  assert.equal(job.metrics.done,file.length*347);
+  assert.equal(attempts.get('fixture001'),2);
+  assert.equal(attempts.get('fixture002'),2);
+  assert.equal(attempts.get('fixture348'),1);
+  assert.equal(maximum,2);
+  assert.match(job.message,/347\/348 verified; 1 failed; 0 unfinished/);
+  assert.match(job.message,/HTTP 403/);
+  allowLast=true;
+  f.app.launch(job);
+  await f.app.active.task;
+  assert.equal(job.status,'Completed');
+  assert.equal(transfers.size,348);
+  assert.ok([...transfers.values()].every(count=>count===1));
+});
+
+
+test('automatic dispatch skips a queued download while its removal is in progress', async t => {
+  let finishTransfer, finishRemoval, signalRemoving;
+  const transfer = new Promise(resolve => { finishTransfer = resolve; });
+  const removing = new Promise(resolve => { signalRemoving = resolve; });
+  const removal = new Promise(resolve => { finishRemoval = resolve; });
+  const f = await fixture(t, { execute: async (bin,args) => { await transfer; return success(bin,args); } });
+  const first = await f.app.start({link, destination:f.destination, name:'first'});
+  const second = await f.app.start({link, destination:f.destination, name:'second'});
+  const third = await f.app.start({link, destination:f.destination, name:'third'});
+  const log = f.app.log.bind(f.app);
+  f.app.log = async (job,message) => {
+    if (job.id === second && message.startsWith('Removed from History')) {
+      signalRemoving();
+      await removal;
+    }
+    await log(job,message);
+  };
+  const removingJob = f.app.remove(second);
+  await removing;
+  const firstTask = f.app.active.task;
+  finishTransfer();
+  await firstTask;
+  assert.equal(f.app.active.id, third);
+  assert.equal(f.app.jobs.get(first).status,'Completed');
+  const thirdTask = f.app.active.task;
+  finishRemoval();
+  await Promise.all([removingJob,thirdTask]);
+  assert.equal(f.app.jobs.has(second),false);
+  assert.equal((await fs.readdir(f.destination)).length,2);
+});

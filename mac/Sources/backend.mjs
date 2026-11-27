@@ -50,7 +50,7 @@ async function handle(line) {
       output({type:'installUpdate',archive});
       return;
     }
-    if (msg.action === 'pause') { app.pause(msg.id); return; }
+    if (msg.action === 'pause') { await app.pause(msg.id); return; }
     if (msg.action === 'remove' || msg.action === 'deleteFiles') {
       await app.remove(msg.id, { deleteFiles: msg.action === 'deleteFiles',
         trash: file => invoke(helper, ['--trash', file]) });
@@ -58,7 +58,7 @@ async function handle(line) {
     }
     if (msg.action === 'start' || msg.action === 'resume') {
       if (!aria) throw new DownloadError('Install aria2 with brew install aria2, then reopen this app.');
-      if (msg.action === 'start') await app.start(msg);
+      if (msg.action === 'start') output({type:'accepted', id:await app.start(msg)});
       else {
         const job = app.jobs.get(msg.id);
         if (!job) throw new DownloadError('Select a download from History.');
@@ -104,12 +104,14 @@ async function handle(line) {
     output({ type: 'error', message: e instanceof DownloadError || e instanceof GoogleDriveError ? e.message : 'The requested action could not finish.' });
   } finally { app.send(); }
 }
+if (aria) app.runNext();
 lines.on('line', line => { queue = queue.then(() => handle(line)); });
 lines.on('close', async () => {
   await queue;
+  app.stopping = true;
   const active = app.active;
   if (active) {
-    app.pause();
+    await app.pause();
     await active.task;
   }
   process.exitCode = 0;

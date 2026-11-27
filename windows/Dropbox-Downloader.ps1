@@ -101,9 +101,30 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
                     $delay = [int][Math]::Max(1, [Math]::Min(121, $seconds))
                 }
             }
-            $problem = if($Provider -eq 'Google Drive' -and $status -eq '403'){'Google Drive denied this file request. Check Anyone with the link access; API quota or key restrictions may also block it.'}else{"$Provider returned HTTP $status, curl $probeExit. No usable byte range."}
+            $driveDetail = if ($Provider -eq 'Google Drive' -and $status -in @('401','403','404','429') -and (Get-Item -LiteralPath $sample).Length -le 65536) {
+                [IO.File]::ReadAllText($sample)
+            }
+            $problem = if ($status -eq '403' -and $driveDetail -match '(?i)automated queries') {
+                'Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block, then resume.'
+            } elseif ($driveDetail -match '(?i)downloadQuotaExceeded|download quota') {
+                "Google Drive download quota exceeded (HTTP $status). Wait for the file quota to reset, then resume."
+            } elseif ($Provider -eq 'Google Drive' -and $status -eq '401') {
+                'Google Drive requires sign-in (HTTP 401). Ask the owner to enable Anyone with the link and viewer downloads.'
+            } elseif($Provider -eq 'Google Drive' -and $status -eq '403'){'Google Drive denied this file request (HTTP 403). Check Anyone with the link access; API quota or key restrictions may also block it.'}else{"$Provider returned HTTP $status, curl $probeExit. No usable byte range."}
             if ($delay -gt 120) { $problem += " $Provider requested a longer wait. Try again later." }
-            return @{ Problem = $problem; RetryDelay = $delay }
+            $reason = ''
+            if ($driveDetail -match '^\s*\{') {
+                try {
+                    $api = $driveDetail | ConvertFrom-Json -ErrorAction Stop
+                    $reason = @($api.error.errors)[0].reason
+                    if ($reason -notmatch '^[a-zA-Z][a-zA-Z0-9_]{0,63}$') { $reason = '' }
+                } catch { $reason = '' }
+            }
+            $category = if ($problem -match 'blocked automated|download quota') { 'provider-blocked' }
+                elseif ($status -in @('401','403','404')) { 'permission' }
+                elseif ($delay) { 'transient' } else { 'permanent' }
+            if ($reason) { $problem += " Drive API reason: $reason." }
+            return @{ Problem = $problem; RetryDelay = $delay; HttpStatus = $status; Category = $category }
         }
         $range = [regex]::Match($response, '(?im)^Content-Range:\s*bytes 0-(\d+)/(\d+)[ \t]*\r?$')
         if (-not $range.Success) { return @{ Problem = "$Provider did not report the byte range and total size." } }
@@ -139,6 +160,10 @@ function Get-DownloadProbe([string]$Curl, [string]$Url, [bool]$VerifyMp4, [bool]
 function Get-FileProbeWithRetry([string]$Curl, [string]$Url, [bool]$VerifyMp4, [string[]]$Headers=@(), [string]$Provider='Dropbox') {
     for ($attempt = 0; $attempt -lt 3; $attempt++) {
         $probe = Get-DownloadProbe $Curl $Url $VerifyMp4 $false $false $Headers $Provider
+        if ($probe.Problem -and $Provider -eq 'Google Drive') {
+            Add-DownloadLog "Media link check attempt $($attempt + 1)/3: $($probe.Category) $($probe.Problem)"
+        }
+        $probe.RetryCount = $attempt
         if (-not $probe.RetryDelay -or $probe.RetryDelay -gt 120 -or $attempt -eq 2) {
             return $probe
         }
@@ -231,7 +256,7 @@ try {
     }
     $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
-    Write-Host 'GOB 1.2.2'
+    Write-Host 'GOB 1.2.3'
     $folderZip = $false
     $subfolder = $false
     $brutal = $false
@@ -290,8 +315,10 @@ try {
     if($provider -eq 'google-drive') {
         $driveLink=Get-GoogleDriveLinkInfo $inputLink
         $driveId=if($job.ParentFolder -and $job.DriveFile.Id){[string]$job.DriveFile.Id}else{$driveLink.Id}
-        $driveResourceKey=if($job.ParentFolder -and $job.DriveFile.ResourceKey){[string]$job.DriveFile.ResourceKey}else{$driveLink.ResourceKey}
+        $driveResourceKey=if($job.ParentFolder -and $job.DriveFile.Id){[string]$job.DriveFile.ResourceKey}else{$driveLink.ResourceKey}
+        $script:downloadStage = 'Drive file metadata'
         $driveFile=Get-GoogleDriveMetadata $driveId $driveResourceKey
+        if (-not $driveFile.resourceKey -and $driveResourceKey) { $driveFile | Add-Member NoteProperty resourceKey $driveResourceKey -Force }
         if($driveFile.mimeType -eq 'application/vnd.google-apps.folder'){
             if($HistoryAttempt -and $job.FolderMode -eq 'files'){Invoke-FolderDownload $job $inputLink;exit 0}
             throw 'Google Drive folders download as individual files. Start from the folder link in the GOB app.'
@@ -324,7 +351,7 @@ try {
             throw 'Open the MP4 inside the shared folder and copy its URL, or paste a Dropbox file share link.'
         }
     }
-    $verifyMp4 = $share.AbsolutePath -match '\.mp4$' -or $name -match '\.mp4$'
+    $verifyMp4 = $provider -ne 'google-drive' -and ($share.AbsolutePath -match '\.mp4$' -or $name -match '\.mp4$')
     if($provider -eq 'dropbox') {
       $modes = @('dl=1')
       if ($isSharedFolderVideo) { $modes += 'raw=1' }
@@ -462,11 +489,21 @@ try {
             if ($probe.RetryDelay) { break }
         }
         if ($null -eq $size) {
+            if ($provider -eq 'google-drive' -and $probe.Problem) {
+                if ($script:historyState) {
+                    $script:historyState.FailureCategory = $probe.Category
+                    $script:historyState.HttpStatus = $probe.HttpStatus
+                    $script:historyState.RetryCount = $probe.RetryCount
+                    $script:historyState.ProviderRestricted = $probe.Category -eq 'provider-blocked' -or $probe.HttpStatus -in @('401','429')
+                }
+                throw $probe.Problem
+            }
             if ($folderZip) { throw "No download started. Check that $providerName can download this shared folder as a ZIP." }
             throw 'No download started. Any saved progress was kept. Check the link in your browser and retry with the same download settings.'
         }
         if ($job.ParentFolder -eq $true -and [long]$job.ExpectedSize -ne $size) { throw 'This folder file changed size after listing. Saved files were kept. Download the changed folder under a new name.' }
         if ($provider -eq 'google-drive' -and [long]$driveFile.size -ne [long]$size){throw 'Google Drive returned a different file size than its metadata. Saved files were kept.'}
+        if ($script:historyState) { $script:historyState.Size = $size }
         if ($size -gt 0) { Add-DownloadLog ("$providerName reported a file size of {0:N2} GiB." -f ($size / 1GB)) }
         $script:downloadStage = 'Preparing the saved checkpoint and destination'
         $identity = Get-TextHash "$url|${size}"
@@ -683,6 +720,17 @@ try {
     }
     $diagnostic = [regex]::Replace($failure, '(?i)https?://[^\s]+', '[share link]')
     $diagnostic = [regex]::Replace($diagnostic, '(?i)\b[A-Z]:\\[^\r\n]*', '[local path omitted]')
+    $diagnostic = $diagnostic -replace '(?i)AIza[A-Za-z0-9_-]+','[API key omitted]'
+    if ($provider -eq 'google-drive') {
+        $safeReason = $diagnostic
+        if ($safeReason -match 'blocked automated requests') {
+            if ($script:historyState) { $script:historyState.ProviderRestricted = $true }
+        }
+    }
+    if ($provider -eq 'google-drive') {
+        $where = if ($job.FolderIndex) { "file $($job.FolderIndex)/$($job.FolderCount), " } else { '' }
+        Add-DownloadLog "Drive failure: $where stage=$script:downloadStage; HTTP=$($script:historyState.HttpStatus); retries=$($script:historyState.RetryCount); category=$($script:historyState.FailureCategory)."
+    }
     Add-DownloadLog ("Reason: " + $diagnostic)
     Finish-DownloadLog $safeReason
     Update-HistoryState 'Failed' $safeReason

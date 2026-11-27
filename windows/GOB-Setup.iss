@@ -1,4 +1,4 @@
-#define AppVersion "1.2.2"
+#define AppVersion "1.2.3"
 [Setup]
 AppId={{C46118B1-B164-42ED-8CA7-687DC2ED8B75}
 AppName=GOB

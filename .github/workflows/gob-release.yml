@@ -7,6 +7,11 @@ on:
         required: true
         default: '1.2.0'
         type: string
+      publish:
+        description: Publish after the platform checks (main branch only)
+        required: true
+        default: true
+        type: boolean
 concurrency:
   group: gob-production-release
   cancel-in-progress: false
@@ -155,6 +160,7 @@ jobs:
           path: release-files/gob-update.json
           if-no-files-found: error
       - name: Publish tested stable release and update feed
+        if: inputs.publish && github.ref_name == 'main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -173,6 +179,7 @@ jobs:
           publication_sha=$(git rev-parse origin/main)
           gh release create "gob-v$GOB_VERSION" release-files/* --target "$publication_sha" --latest --title "GOB $GOB_VERSION - Grab Our Bytes" --notes-file "$RUNNER_TEMP/notes.md"
   verify-public:
+    if: inputs.publish && github.ref_name == 'main'
     needs: [prepare, release]
     runs-on: ubuntu-latest
     steps:
