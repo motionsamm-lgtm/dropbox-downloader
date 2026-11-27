@@ -181,6 +181,8 @@ function Invoke-FolderDownload($Job,[string]$Link) {
     $manifestPath=Join-Path $directory 'folder-manifest.json'
     $rootPath=$null
     $providerRestricted = $false
+    $restrictionReason = ''
+    $permissionFailures = 0
     $children=@()
     if([IO.File]::Exists($manifestPath)) {
         $manifest=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -220,6 +222,18 @@ function Invoke-FolderDownload($Job,[string]$Link) {
         Write-DownloadState $manifestPath $manifest
         Add-DownloadLog "Complete folder snapshot saved: $($entries.Count) files. Completed files will be kept on Resume."
     }
+    $entries = @($manifest.Entries | Where-Object { $null -ne $_ })
+    $seenIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $seenPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    for ($i = 0; $i -lt $entries.Count; $i++) {
+        $entry = $entries[$i]
+        if ($entry.Id -notmatch '^[a-f0-9]{32}$' -or -not $seenIds.Add([string]$entry.Id) -or
+            -not $entry.Local -or -not $seenPaths.Add($entry.Local.Replace('\','/')) -or
+            $null -eq $entry.Size -or [long]$entry.Size -lt 0) {
+            throw 'The saved folder snapshot contains invalid or duplicate file records. Saved files were kept.'
+        }
+        $entry | Add-Member NoteProperty Index ($i + 1) -Force
+    }
     $rootPath=[string]$manifest.Root
     if(-not $manifest.OutputMode){$manifest | Add-Member -NotePropertyName OutputMode -NotePropertyValue 'folder' -Force}
     $archivePath=[string]$manifest.ArchivePath
@@ -257,7 +271,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
     $script:historyState.Children=@()
     $active=@{};$pending=[Collections.Generic.Queue[object]]::new();$states=@{}
     $parentStart=[string]([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks)
-    foreach($entry in $manifest.Entries) {
+    foreach($entry in $entries) {
         if($entry.Id -notmatch '^[a-f0-9]{32}$' -or $entry.Local -match '(^|[/\\])\.\.?([/\\]|$)' -or [IO.Path]::IsPathRooted($entry.Local)){throw 'The saved folder manifest contains an unsafe path.'}
         $childDirectory=Join-Path (Join-Path $directory 'children') $entry.Id
         $attempt=Get-ChildItem -LiteralPath $childDirectory -Filter 'attempt-*.jsonl' -File | Sort-Object Name -Descending | Select-Object -First 1
@@ -269,7 +283,8 @@ function Invoke-FolderDownload($Job,[string]$Link) {
             $states[$entry.Id]=$state
         } else {$pending.Enqueue($entry)}
     }
-    $parallel=if($Job.Brutal){[Math]::Max(1,[Math]::Min(3,@($manifest.Entries).Count))}else{1}
+    $limit = if ($Job.Provider -eq 'google-drive' -or ($entries.Count -gt 0 -and $entries[0].DriveFile)) { 2 } else { 3 }
+    $parallel = if ($Job.Brutal) { [Math]::Max(1,[Math]::Min($limit,$entries.Count)) } else { 1 }
     Show-DownloadNotification 'Started' 'Downloading the shared folder as separate files.'
     $lastNote=[DateTime]::MinValue
     try {
@@ -279,6 +294,12 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 $entry=$pending.Dequeue();$childDirectory=Join-Path (Join-Path $directory 'children') $entry.Id
                 $childPath=Join-Path $childDirectory 'job.json'
                 $child=Get-Content -LiteralPath $childPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($entry.DriveFile -and ($child.DriveFile.Id -cne $entry.DriveFile.Id -or
+                    [string]$child.DriveFile.ResourceKey -cne [string]$entry.DriveFile.ResourceKey)) {
+                    throw "Saved Drive identity does not match folder file $($entry.Index). Saved files were kept."
+                }
+                $child | Add-Member NoteProperty FolderIndex $entry.Index -Force
+                $child | Add-Member NoteProperty FolderCount $entries.Count -Force
                 $child.ParentWorkerId=$PID;$child.ParentWorkerStart=$parentStart
                 $child.Connections=if($script:historyState.RecoveryMode){1}elseif($Job.Brutal){[int][Math]::Floor(16 / $parallel)}else{[int]$Job.Connections}
                 $child.Brutal=$Job.Brutal -and -not $script:historyState.RecoveryMode
@@ -290,48 +311,67 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 $start.Arguments='--worker '+(Quote-TransferArgument $attempt)
                 $process=[Diagnostics.Process]::Start($start)
                 $active[$entry.Id]=@{Entry=$entry;Attempt=$attempt;Process=$process}
-                Add-DownloadLog "Started file $($states.Count + $active.Count) of $(@($manifest.Entries).Count)."
+                Add-DownloadLog "Started file $($entry.Index) of $($entries.Count)."
             }
             foreach($id in @($active.Keys)) {
                 $item=$active[$id]
                 if($pausing){[IO.File]::WriteAllText($item.Attempt+'.pause','pause')}
-                $state=Read-HistoryState $item.Attempt
+                # Read the terminal record after observing process exit. Reading first
+                # can race the worker's final append and discard a verified completion.
+                $exited = $item.Process.HasExited
+                $state = Read-HistoryState $item.Attempt
                 if($state){
                     $states[$id]=$state
-                    if ($state.ProviderRestricted) { $providerRestricted = $true }
+                    if ($state.ProviderRestricted) {
+                        $providerRestricted = $true
+                        $restrictionReason = [string]$state.Message
+                    }
                     if($state.RecoveryMode -and -not $script:historyState.RecoveryMode){
                         $parallel=1;$script:historyState.RecoveryMode=$true
                         Add-DownloadLog 'A folder file needed recovery. Reducing the queue to one file and one connection for subsequent transfers.'
                     }
                 }
-                if($item.Process.HasExited) {
+                if($exited) {
                     $item.Process.Dispose();$active.Remove($id)
                     if(-not $state -or $state.Status -notin @('Completed','Paused','Failed')){$states[$id]=@{Status='Interrupted';Message='This file stopped before completion was confirmed.'}}
-                    Add-DownloadLog "Folder file $($item.Entry.Remote) ended with status $($states[$id].Status). $($states[$id].Message)"
+                    $finalState = $states[$id]
+                    if ($item.Entry.DriveFile -and $finalState.Status -eq 'Failed') {
+                        if ($finalState.FailureCategory -eq 'permission') { $permissionFailures++ }
+                        if ($permissionFailures -ge 3) {
+                            $providerRestricted = $true
+                            $restrictionReason = 'Google Drive denied multiple files. Check folder and file sharing before resuming.'
+                        }
+                    }
+                    Add-DownloadLog "File $($item.Entry.Index) of $($entries.Count) ended with status $($finalState.Status). $($finalState.Message)"
                 }
             }
-            $done=0L;$total=0L;$speed=0L;$finished=0;$views=@()
-            foreach($entry in $manifest.Entries) {
+            $done=0L;$total=0L;$speed=0L;$finished=0;$failedCount=0;$remaining=0;$views=@()
+            foreach($entry in $entries) {
                 $state=$states[$entry.Id];$total+=[long]$entry.Size
                 $stage=if($state){[string]$state.Status}else{'Queued'}
                 if($stage -eq 'Completed'){$done+=[long]$entry.Size;$finished++}
                 elseif($state.Metrics){$done+=[Math]::Min([long]$entry.Size,[long]$state.Metrics.Completed);if($active.ContainsKey($entry.Id)){$speed+=[long]$state.Metrics.Speed}}
+                if ($stage -in @('Failed','Interrupted')) { $failedCount++ }
+                elseif ($stage -ne 'Completed') { $remaining++ }
                 if ($views.Count -lt 500) { $views+=@{Id=$entry.Id;Name=$entry.Remote;Status=$stage; Size=[long]$entry.Size; Completed=$state.Metrics.Completed; Message=[string]$state.Message} }
             }
             $script:historyState.Children=$views
-            $script:historyState.FileCount=@($manifest.Entries).Count
+            $script:historyState.FileCount=@($entries).Count
             $script:historyState.CompletedFileCount=$finished
+            $script:historyState.FailedFileCount=$failedCount
+            $script:historyState.PendingFileCount=$remaining
             $script:historyState.Metrics=@{Total=$total;Completed=$done;Speed=$speed;Connections=$active.Count;Estimated=$false}
-            $message="$finished of $(@($manifest.Entries).Count) files complete."
+            $message="$finished/$($entries.Count) verified; $failedCount failed; $remaining unfinished."
+            if ($providerRestricted) { $message += " $restrictionReason" }
             Update-HistoryState $(if($pausing){'Pausing'}else{'Running'}) $message
             if(([DateTime]::UtcNow-$lastNote).TotalSeconds -ge 30){Add-DownloadLog ('Folder progress: '+$message+(' {0:N2} of {1:N2} GiB; {2:N1} MiB/s.' -f ($done/1GB),($total/1GB),($speed/1MB)));$lastNote=[DateTime]::UtcNow}
             if($active.Count){Start-Sleep -Milliseconds 300}
         } while($active.Count -or ($pending.Count -and -not $providerRestricted -and -not (Test-DownloadPause)))
         Assert-DownloadActive
-        if($finished -ne @($manifest.Entries).Count){
-            $failed = $manifest.Entries | Where-Object { $states[$_.Id].Status -in @('Failed','Interrupted') } | Select-Object -First 1
-            $reason = if ($providerRestricted) { 'Google Drive blocked automated requests (HTTP 403). Wait for Google to lift the block.' } elseif ($failed) { $states[$failed.Id].Message } else { '' }
-            throw ("Some folder files did not finish. " + ($reason + " Resume keeps completed files and retries unfinished ones.").TrimStart())
+        if($finished -ne @($entries).Count){
+            $failed = $entries | Where-Object { $states[$_.Id].Status -in @('Failed','Interrupted') } | Select-Object -First 1
+            $reason = if ($providerRestricted) { $restrictionReason } elseif ($failed) { $states[$failed.Id].Message } else { '' }
+            throw ("Some folder files did not finish. $message " + ($reason + " Resume keeps completed files and retries unfinished ones.").TrimStart())
         }
         if($manifest.OutputMode -eq 'zip'){
             Update-HistoryState 'Verifying' 'Every file is complete. Assembling and checking the ZIP.'

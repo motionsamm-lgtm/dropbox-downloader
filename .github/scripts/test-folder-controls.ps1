@@ -19,7 +19,13 @@ class Fixture {
   string attempt=args[1];var job=json.Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(Path.GetDirectoryName(attempt),"job.json")));
   string name=(string)job["Name"],output=Path.Combine((string)job["Destination"],name);long size=Convert.ToInt64(job["ExpectedSize"]);
   File.AppendAllText(output+".starts","1");Write(attempt,"Running",output,size);
-  int rounds=Environment.GetEnvironmentVariable("GOB_FIXTURE_SLOW")=="1"?60:3;
+  int rounds=Environment.GetEnvironmentVariable("GOB_FIXTURE_SLOW")=="1"?60:
+   Environment.GetEnvironmentVariable("GOB_FIXTURE_FAST")=="1"?0:3;
+  if(job.ContainsKey("DriveFile") && job["DriveFile"]!=null) {
+   var drive=(Dictionary<string,object>)job["DriveFile"];
+   if((string)drive["Id"]!=Path.GetFileNameWithoutExtension(name) || Convert.ToInt32(job["FolderIndex"])<1 ||
+     Convert.ToInt32(job["FolderIndex"])>Convert.ToInt32(job["FolderCount"])) { Write(attempt,"Failed",output,size); return; }
+  }
   for(int n=0;n<rounds;n++){Thread.Sleep(100);if(File.Exists(attempt+".pause")){Write(attempt,"Paused",output,size);return;}}
   if(Environment.GetEnvironmentVariable("GOB_FIXTURE_FAIL")==name){Write(attempt,"Failed",output,size);return;}
   File.WriteAllBytes(output,new byte[size]);Write(attempt,"Completed",output,size);
@@ -31,14 +37,15 @@ $GOBExecutable=Join-Path $testRoot 'Fixture.exe'
 $csc=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 & $csc /nologo /target:winexe "/out:$GOBExecutable" /reference:System.Web.Extensions.dll $codePath
 if($LASTEXITCODE){throw 'Could not build the isolated worker fixture.'}
-function New-Case([string]$Name) {
+function New-Case([string]$Name,[string[]]$Files=@('a.bin','nested/b.bin'),[switch]$Drive) {
  $dir=Join-Path $testRoot $Name;$out=Join-Path $dir 'saved';[void][IO.Directory]::CreateDirectory($out)
  $entries=@()
- foreach($file in @('a.bin','nested/b.bin')) {
+ foreach($file in $Files) {
   $id=[Guid]::NewGuid().ToString('N');$childDir=Join-Path (Join-Path $dir 'children') $id;[void][IO.Directory]::CreateDirectory($childDir)
   $target=Join-Path $out $file.Replace('/',[IO.Path]::DirectorySeparatorChar);[void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-  @{Name=[IO.Path]::GetFileName($target);Destination=[IO.Path]::GetDirectoryName($target);ExpectedSize=512;ParentWorkerId=$PID;ParentWorkerStart='';Brutal=$true;Connections=4;SpeedLimit=0} | ConvertTo-Json | Set-Content (Join-Path $childDir 'job.json') -Encoding UTF8
-  $entries+=@{Id=$id;Remote=$file;Local=$file;Size=512}
+  $driveFile=if($Drive){@{Id=[IO.Path]::GetFileNameWithoutExtension($file);ResourceKey=''}}else{$null}
+  @{DriveFile=$driveFile;Name=[IO.Path]::GetFileName($target);Destination=[IO.Path]::GetDirectoryName($target);ExpectedSize=512;ParentWorkerId=$PID;ParentWorkerStart='';Brutal=$true;Connections=4;SpeedLimit=0} | ConvertTo-Json | Set-Content (Join-Path $childDir 'job.json') -Encoding UTF8
+  $entries+=@{Id=$id;Remote=$file;Local=$file;Size=512;DriveFile=$driveFile}
  }
  Write-DownloadState (Join-Path $dir 'folder-manifest.json') @{Schema=1;Root=$out;Entries=$entries}
  return @{Directory=$dir;Output=$out;Job=@{Name=$Name;Destination=$dir;Brutal=$true;Connections=4;SpeedLimit=0}}
@@ -66,6 +73,32 @@ try {
  try {Invoke-FolderDownload $case.Job 'unused';throw 'Folder pause was ignored.'} catch {if($_.Exception.Message -notlike '*paused by you*'){throw}}
  if(@($script:historyState.Children|Where-Object Status -eq 'Paused').Count -ne 2){throw 'Not every active file acknowledged pause.'}
 } finally {$pause|Remove-Job -Force -ErrorAction SilentlyContinue;Remove-Item Env:\GOB_FIXTURE_SLOW -ErrorAction SilentlyContinue}
+$files=@(1..348 | ForEach-Object { 'fixture-{0:D3}.bin' -f $_ })
+$case=New-Case 'Drive348' $files -Drive
+$case.Job.Provider='google-drive'
+$env:GOB_FIXTURE_FAST='1'
+$env:GOB_FIXTURE_FAIL=$files[173]
+try {
+ Set-Attempt $case
+ try { Invoke-FolderDownload $case.Job 'unused'; throw 'Expected one failure.' }
+ catch { if ($_.Exception.Message -notlike '*347/348 verified; 1 failed; 0 unfinished*Fixture Failed*') { throw } }
+ $starts=@(Get-Content -LiteralPath (Get-HistoryLogPath $case.Directory) | ForEach-Object {
+   if ($_ -match 'Started file (\d+) of 348\.') { [int]$Matches[1] }
+ })
+ if ($starts.Count -ne 348 -or @(Compare-Object (1..348) $starts).Count) { throw 'Folder started duplicate or out-of-range indices.' }
+ if($script:historyState.Metrics.Total -ne 348*512 -or $script:historyState.Metrics.Completed -ne 347*512){throw 'Folder byte totals did not reflect verified files.'}
+ Remove-Item Env:\GOB_FIXTURE_FAIL
+ Set-Attempt $case
+ Invoke-FolderDownload $case.Job 'unused'
+ if ($script:historyState.CompletedFileCount -ne 348) { throw 'Resume did not preserve all completed files.' }
+ foreach($name in $files) {
+   $expected=if($name -eq $files[173]){2}else{1}
+   if((Get-Content -LiteralPath (Join-Path $case.Output ($name+'.starts')) -Raw).Length -ne $expected) { throw 'Resume retried the wrong file.' }
+ }
+} finally {
+ Remove-Item Env:\GOB_FIXTURE_FAST,Env:\GOB_FIXTURE_FAIL -ErrorAction SilentlyContinue
+}
+Write-Host 'PASS: 348 immutable Drive fixture records, bounded indices, exact byte aggregation and file-specific resume.'
 Write-Host 'PASS: folder aggregation, completed-file preservation, failed-file retry, tracked-file deletion and whole-folder pause.'
 $script:historyAttemptPath=$null;$script:historyState=$null
 $public='https://www.dropbox.com/scl/fo/hsynj5331wvy39wer5egb/h?rlkey=oxhfrqft9ufoo3y0es4a2f8wz&dl=0'

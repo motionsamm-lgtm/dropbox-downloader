@@ -737,7 +737,7 @@ export class Downloader {
       }
       await this.status(job,'Downloading','Downloading folder files separately.');
       if(job.notifications)this.emit({type:'notification',title:'Folder download started',body:job.name});
-      let cursor=0, restricted=false;
+      let cursor=0, restricted=false, permissionFailures=0;
       const worker = async workerIndex => {
         while(!restricted&&cursor<children.length&&!signal.aborted&&workerIndex<parallelLimit) {
           const index=cursor++,child=children[index];
@@ -747,20 +747,26 @@ export class Downloader {
           app.jobs.set(child.id,child);
           app.log=(_child,message)=>this.log(job,`File ${index+1}/${children.length}: ${message}`);
           await app.run(child,null,false,signal);
-          if (child.status === 'Failed' && child.message?.includes('blocked automated requests')) restricted = true;
+          if (child.status === 'Failed' && job.provider === 'google-drive') {
+            if ([403,404].includes(child.failureHttp)) permissionFailures++;
+            if ([401,429].includes(child.failureHttp) || permissionFailures >= 3 || child.message?.includes('blocked automated requests')) restricted = true;
+          }
           update();
         }
       };
       update();
-      const results = await Promise.allSettled(Array.from({length:job.brutal?3:1},(_,index)=>worker(index)));
+      const results = await Promise.allSettled(Array.from({length:job.brutal?(job.provider==='google-drive'?2:3):1},(_,index)=>worker(index)));
       const rejected = results.find(result=>result.status==='rejected');
       if(rejected) throw rejected.reason;
       update();
       let status=signal.aborted?'Paused':children.every(child=>child.status==='Completed')?'Completed':'Failed';
+      const failedCount = children.filter(child => ['Failed','Interrupted'].includes(child.status)).length;
+      const pendingCount = children.length - job.completedFiles - failedCount;
+      const counts = `${job.completedFiles}/${children.length} verified; ${failedCount} failed; ${pendingCount} unfinished.`;
       const failed = children.find(child => child.status === 'Failed');
       let message=status==='Completed'?`Completed. ${children.length} files saved and verified.`:
         status==='Paused'?`Paused. ${job.completedFiles}/${children.length} files completed; Resume keeps them.`:
-        `${job.completedFiles}/${children.length} files completed. ${failed?.message || ''} Resume retries unfinished files.`;
+        `${counts} ${failed?.message || ''} Resume retries unfinished files.`;
       if (status === 'Completed' && job.folderOutput === 'zip') {
         await this.status(job, 'Verifying', 'Every file is verified. Assembling and checking the ZIP…');
         message = await this.createFolderZip(job, children, signal);
@@ -791,6 +797,7 @@ export class Downloader {
           last = e;
           if (e.zipResponse && job.expectedSize === undefined && /^https:\/\/(?:www\.)?dropbox\.com\/(?:scl\/fo|sh)\//.test(link.original)) throw e;
           if (!(e instanceof DownloadError)) last = new DownloadError(`The network timed out or could not reach ${link.provider === 'google-drive'?'Google Drive':'Dropbox'}.`, 503);
+          await this.log(job, `Link check attempt ${attempt + 1}/3 (HTTP ${last.http || 'unavailable'}): ${last.message}`);
           if (attempt === 2 || !httpRetry.has(last.http) || [403, 410].includes(last.http) || last.wait > 120) break;
           const seconds = Math.max(last.wait, last.http === 429 ? 30 : 5);
           await this.log(job, `Link check failed. Waiting ${seconds}s before checking again.`);
@@ -972,6 +979,7 @@ export class Downloader {
         transferURL = fresh.url;
       }
     } catch (e) {
+      job.failureHttp = signal.aborted ? 0 : e.http || e.status || 0;
       const message = signal.aborted ? pauseText :
         e instanceof DownloadError || e instanceof GoogleDriveError ? e.message : 'The network, save volume, or download history became unavailable. Saved transfer files were kept.';
       await this.log(job, `Result: ${message}`);

@@ -692,7 +692,7 @@ function Update-SelectedDownload {
         $progress.Value = [int][Math]::Floor($metrics.Percent)
         $detail.Text = "$($metrics.ProgressText)   |   $($metrics.SpeedText)   |   ETA $($metrics.EtaText)"
         if ($metrics.Estimated) { $detail.Text += '  (from saved pieces)' }
-        if ($state.IsFolder) { $detail.Text += '   |   ' + $state.CompletedFileCount + '/' + $state.FileCount + ' files'; if ($state.FileCount -gt 500) { $detail.Text += ' (first 500 rows shown)' } }
+        if ($state.IsFolder) { $detail.Text += '   |   ' + $state.CompletedFileCount + '/' + $state.FileCount + ' verified; ' + [int]$state.FailedFileCount + ' failed; ' + [int]$state.PendingFileCount + ' unfinished'; if ($state.FileCount -gt 500) { $detail.Text += ' (first 500 rows shown)' } }
         if ($state.RecoveryMode) { $detail.Text += '   |   Recovery: 1 connection' }
     } else {
         $fraction = if ($stage -eq 'Verifying') { 99.9 } else { $selected.LastPercent }

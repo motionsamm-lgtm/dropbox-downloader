@@ -522,3 +522,57 @@ test('reports a Drive automated-query block separately from sharing permissions'
     new AbortController().signal, request, () => true, {}, 'Google Drive'),
     error => error.http === 403 && /blocked automated requests/.test(error.message));
 });
+
+test('348 Drive files keep their identities through transient retries and a partial folder resume', async t => {
+  const files = Array.from({length:348}, (_,i)=>({
+    id:'fixture'+String(i+1).padStart(3,'0'), name:'file'+String(i+1).padStart(3,'0')+'.bin',
+    mimeType:'application/octet-stream', size:String(file.length), resourceKey:'key'+String(i+1).padStart(3,'0')
+  }));
+  const byId = new Map(files.map(item=>[item.id,item]));
+  const attempts = new Map(), transfers = new Map();
+  let inFlight=0, maximum=0, allowLast=false;
+  const driveClient = {
+    metadata:async id=>byId.get(id) || {id,name:'Folder',mimeType:'application/vnd.google-apps.folder'},
+    listPage:async()=>({files})
+  };
+  const f=await fixture(t,{driveClient,driveApiKey:'fixture-only',
+    inspect:async(url,folder,onePass,signal,_fetch,_allow,headers)=>{
+      const id = new URL(url).pathname.split('/').at(-1);
+      assert.ok(byId.has(id));
+      assert.equal(headers['X-Goog-Drive-Resource-Keys'],id+'/'+byId.get(id).resourceKey);
+      const count=(attempts.get(id)||0)+1;
+      attempts.set(id,count);
+      const code = id==='fixture001' && count===1 ? 429 :
+        id==='fixture002' && count===1 ? 503 :
+        id==='fixture348' && !allowLast ? 403 : 206;
+      if (code!==206) return probe(url,folder,onePass,signal,async()=>new Response(null,{status:code}),()=>true,{},'Google Drive');
+      return source;
+    },
+    execute:async(bin,args)=>{
+      const id=new URL(args.at(-1)).pathname.split('/').at(-1);
+      assert.equal(path.basename(option(args,'out')).includes(byId.get(id).name),true);
+      transfers.set(id,(transfers.get(id)||0)+1);
+      maximum=Math.max(maximum,++inFlight);
+      try { return await success(bin,args); }
+      finally { inFlight--; }
+    }});
+  await f.app.start({link:'https://drive.google.com/drive/folders/rootfixture',destination:f.destination,brutal:true});
+  await f.app.active.task;
+  const job=f.job();
+  assert.equal(job.status,'Failed');
+  assert.equal(job.completedFiles,347);
+  assert.equal(job.metrics.total,file.length*348);
+  assert.equal(job.metrics.done,file.length*347);
+  assert.equal(attempts.get('fixture001'),2);
+  assert.equal(attempts.get('fixture002'),2);
+  assert.equal(attempts.get('fixture348'),1);
+  assert.equal(maximum,2);
+  assert.match(job.message,/347\/348 verified; 1 failed; 0 unfinished/);
+  assert.match(job.message,/HTTP 403/);
+  allowLast=true;
+  f.app.launch(job);
+  await f.app.active.task;
+  assert.equal(job.status,'Completed');
+  assert.equal(transfers.size,348);
+  assert.ok([...transfers.values()].every(count=>count===1));
+});
