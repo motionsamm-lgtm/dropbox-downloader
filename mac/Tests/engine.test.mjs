@@ -486,3 +486,29 @@ test('a ZIP integrity failure preserves downloaded files and never publishes the
   await assert.rejects(fs.stat(job.target), {code:'ENOENT'});
   assert.deepEqual(await fs.readFile(path.join(job.folderRoot, 'take.mp4')), file);
 });
+
+
+test('accepted links persist independently and the queue continues after pausing a waiting job', async t => {
+  let unblock;
+  const gate = new Promise(resolve => { unblock = resolve; });
+  const f = await fixture(t, { execute: async (bin,args) => { await gate; return success(bin,args); } });
+  const first = await f.app.start({link, destination:f.destination, name:'first'});
+  const second = await f.app.start({link, destination:f.destination, name:'second'});
+  const third = await f.app.start({link, destination:f.destination, name:'third'});
+  const firstTask = f.app.active.task;
+  assert.equal(f.app.active.id, first);
+  assert.equal(f.app.jobs.get(second).status, 'Queued');
+  await f.app.pause(second);
+  assert.equal(f.app.jobs.get(second).status, 'Paused');
+  unblock();
+  await firstTask;
+  assert.equal(f.app.active.id, third);
+  await f.app.active.task;
+  assert.equal(f.app.jobs.get(first).status, 'Completed');
+  assert.equal(f.app.jobs.get(third).status, 'Completed');
+  assert.equal(f.app.jobs.get(second).status, 'Paused');
+  f.app.launch(f.app.jobs.get(second));
+  await f.app.active.task;
+  assert.equal(f.app.jobs.get(second).status, 'Completed');
+  assert.equal((await fs.readdir(f.destination)).length, 3);
+});

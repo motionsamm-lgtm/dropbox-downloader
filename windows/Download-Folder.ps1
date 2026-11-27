@@ -305,7 +305,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 if($item.Process.HasExited) {
                     $item.Process.Dispose();$active.Remove($id)
                     if(-not $state -or $state.Status -notin @('Completed','Paused','Failed')){$states[$id]=@{Status='Interrupted';Message='This file stopped before completion was confirmed.'}}
-                    Add-DownloadLog "A folder file ended with status $($states[$id].Status). $($states[$id].Message)"
+                    Add-DownloadLog "Folder file $($item.Entry.Remote) ended with status $($states[$id].Status). $($states[$id].Message)"
                 }
             }
             $done=0L;$total=0L;$speed=0L;$finished=0;$views=@()
@@ -314,7 +314,7 @@ function Invoke-FolderDownload($Job,[string]$Link) {
                 $stage=if($state){[string]$state.Status}else{'Queued'}
                 if($stage -eq 'Completed'){$done+=[long]$entry.Size;$finished++}
                 elseif($state.Metrics){$done+=[Math]::Min([long]$entry.Size,[long]$state.Metrics.Completed);if($active.ContainsKey($entry.Id)){$speed+=[long]$state.Metrics.Speed}}
-                if ($views.Count -lt 500) { $views+=@{Id=$entry.Id;Name=$entry.Remote;Status=$stage} }
+                if ($views.Count -lt 500) { $views+=@{Id=$entry.Id;Name=$entry.Remote;Status=$stage; Size=[long]$entry.Size; Completed=$state.Metrics.Completed; Message=[string]$state.Message} }
             }
             $script:historyState.Children=$views
             $script:historyState.FileCount=@($manifest.Entries).Count
@@ -326,7 +326,11 @@ function Invoke-FolderDownload($Job,[string]$Link) {
             if($active.Count){Start-Sleep -Milliseconds 300}
         } while($active.Count -or ($pending.Count -and -not (Test-DownloadPause)))
         Assert-DownloadActive
-        if($finished -ne @($manifest.Entries).Count){throw 'Some folder files did not finish. Resume keeps completed files and retries unfinished ones.'}
+        if($finished -ne @($manifest.Entries).Count){
+            $failed = $manifest.Entries | Where-Object { $states[$_.Id].Status -in @('Failed','Interrupted') } | Select-Object -First 1
+            $reason = if ($failed) { $states[$failed.Id].Message } else { 'Some folder files did not finish.' }
+            throw "$reason Resume keeps completed files and retries unfinished ones."
+        }
         if($manifest.OutputMode -eq 'zip'){
             Update-HistoryState 'Verifying' 'Every file is complete. Assembling and checking the ZIP.'
             $archiveResult=Complete-FolderZip $Job $manifest $rootPath $archivePath $directory

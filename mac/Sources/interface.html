@@ -123,6 +123,12 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 [data-preset="brick"] .settings-nav button {border:0;background:transparent}
 [data-preset="brick"] .settings-nav button[aria-current="page"] {background:var(--tint)}
 [data-preset="brick"] .preview-card .primary {pointer-events:none}
+.job-meta {display:block;color:var(--muted);font-size:10px;font-weight:500;overflow:hidden;text-overflow:ellipsis}
+#entryHint {margin:8px 0;font-size:12px}
+[data-preset="brick"] button:not(:disabled):hover {background:var(--tint)}
+[data-preset="brick"] button.primary:not(:disabled):hover {background:color-mix(in srgb,var(--accent),var(--ink) 10%)}
+[data-preset="brick"] .toggle {border-radius:9px;padding:4px}
+[data-preset="brick"] .toggle:focus-within {outline:2px solid var(--accent)}
 </style>
 </head>
 <body>
@@ -146,6 +152,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
         <label class="toggle"><input id="onePass" type="checkbox">One pass (start a separate copy without resume)</label>
         <div class="field"><label for="checksum">Expected SHA-256 <span class="muted">(optional)</span></label><input id="checksum" spellcheck="false"></div>
       </div></details>
+      <p id="entryHint" class="muted" aria-live="polite"></p>
       <button id="formStart" type="submit" class="primary" disabled>Start download</button>
     </form>
   </section>
@@ -236,6 +243,7 @@ dialog::backdrop {background:#0006} dialog p {margin:10px 0}
 const $ = id => document.getElementById(id);
 const send = message => window.webkit.messageHandlers.downloads.postMessage(message);
 const text = (id, value) => { $(id).textContent = value; };
+let submittedLink = null;
 let jobs = [], active = null, selected = null, online = false, pending = false, paused = false;
 let dialogJob = null, editLink = false;
 const defaultSettings = {theme:'light',preset:'brick',brickLightDefault:true,scale:'1',density:'comfortable',colors:{bg:'#09090a',card:'#101113',raised:'#191a1e',ink:'#f3f3f6',muted:'#a8abb3',accent:'#91b8ff'},subfolder:true,folderOutput:'folder',connections:'4',brutal:true,onePass:false,notifications:true};
@@ -292,12 +300,25 @@ function isFolderLink(value) {
   } catch {}
   return false;
 }
+function usableLink(value) {
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) return false;
+    if (['drive.google.com','www.drive.google.com'].includes(url.hostname))
+      return /^\/(?:file\/d|drive\/folders)\/[\w-]{5,200}(?:\/|$)/.test(url.pathname) ||
+        (['/open','/uc'].includes(url.pathname) && /^[\w-]{5,200}$/.test(url.searchParams.get('id') || ''));
+    return (['dropbox.com','www.dropbox.com'].includes(url.hostname) &&
+      /^\/(?:scl\/(?:fi|fo)|s|sh)\/[^/]+\/[^/]+/.test(url.pathname)) ||
+      /^(?:[\w-]+\.)*dl\.dropboxusercontent\.com$/.test(url.hostname);
+  } catch { return false; }
+}
 function refreshLinkOptions() {
   const folder=isFolderLink($('link').value);
   $('folderOutputChoice').hidden=!folder;
   $('subfolder').disabled=!folder;
   $('subfolder').checked=folder && settings.subfolder!==false;
   $('folderOutput').value=settings.folderOutput==='zip'?'zip':'folder';
+  render();
 }
 
 const jobProgress = new Map();
@@ -317,6 +338,9 @@ function renderList() {
     button.setAttribute('aria-pressed', String(selected === job.id));
     const name = document.createElement('span'), state = document.createElement('span');
     name.className = 'name'; name.textContent = job.name;
+    const metadata = document.createElement('small');
+    metadata.className = 'job-meta';
+    name.append(metadata);
     state.className = 'status'; state.dataset.status = job.status; state.textContent = job.status;
     const progress = document.createElement('span');
     progress.className = 'job-progress';
@@ -334,7 +358,7 @@ function renderList() {
       started.title = date.toLocaleString();
     }
     button.append(name, state, progress, started);
-    jobProgress.set(job.id, {bar, amount});
+    jobProgress.set(job.id, {bar, amount, metadata});
     button.onclick = () => { selected = job.id; render(); };
     row.append(button); next.append(row);
   }
@@ -351,13 +375,21 @@ function render() {
   const signature = JSON.stringify([selected, jobs.map(j => [j.id, j.name, j.status])]);
   if (signature !== listSignature) { listSignature = signature; renderList(); }
   for (const entry of jobs) {
-    const {bar, amount} = jobProgress.get(entry.id);
+    const {bar, amount, metadata} = jobProgress.get(entry.id);
+    const size = entry.metrics?.total ?? entry.driveFile?.size ?? entry.finished?.size;
+    metadata.textContent = (entry.provider === 'google-drive' ? 'Google Drive' : 'Dropbox') + ' · ' + (Number.isFinite(size) ? bytes(size) : 'Size unknown');
     const value = jobPercentage(entry);
     bar.value = value ?? 0;
     amount.textContent = value === null ? '—' : value + '%';
   }
   text('count', jobs.length ? jobs.length + (jobs.length === 1 ? ' download' : ' downloads') : '');
-  $('formStart').disabled = !online || Boolean(active) || pending;
+  const link = $('link').value.trim();
+  const reason = !online ? 'Waiting for the download engine.' : submittedLink !== null ? 'Checking the new download…' :
+    !link ? 'Paste a Dropbox or Google Drive share link.' : !usableLink(link) ? 'Enter a supported HTTPS file or folder share link.' :
+    !$('destination').value ? 'Choose a save folder.' : '';
+  $('formStart').disabled = Boolean(reason);
+  text('entryHint', reason || (active ? 'This download will wait in the queue.' : 'Ready to add.'));
+  text('formStart', active ? 'Add to queue' : 'Start download');
   $('transfer').hidden = !job;
   if (!job) return;
   const done = job.status === 'Completed', m = job.metrics;
@@ -366,7 +398,7 @@ function render() {
   $('folderFiles').hidden = job.kind !== 'folder';
   if (job.kind === 'folder') {
     text('folderFilesTitle', 'Files in this folder' + (job.fileCount > 500 ? ' — showing first 500 of ' + job.fileCount : ''));
-    const rows=(job.children || []).map(child=>{const li=document.createElement('li');li.textContent=child.name+' — '+child.status;return li;});
+    const rows=(job.children || []).map(child=>{const li=document.createElement('li');li.textContent=child.name+' — '+child.status+' · '+(Number.isFinite(child.size)?bytes(child.size):'Size unknown')+(child.status==='Failed'&&child.message?' · '+child.message:'');return li;});
     $('folderChildren').replaceChildren(...rows);
   }
   text('transferMessage', paused && active === job.id ? 'Pausing. Saving the checkpoint…' : job.message || job.status);
@@ -376,12 +408,12 @@ function render() {
   text('eta', m?.speed > 0 && m.total > m.done && active === job.id && job.status === 'Downloading' ? 'ETA ' + eta((m.total - m.done) / m.speed) : 'ETA —');
   if (!m?.total && active === job.id && ['Listing', 'Checking', 'Downloading', 'Verifying'].includes(job.status)) $('progress').removeAttribute('value');
   else $('progress').value = percentage;
-  $('pause').hidden = active !== job.id;
-  $('pause').disabled = paused;
+  $('pause').hidden = active !== job.id && job.status !== 'Queued';
+  $('pause').disabled = paused && active === job.id;
   $('remove').disabled = active === job.id || pending;
   $('deleteFiles').disabled = active === job.id || pending;
   $('clearPartials').disabled = Boolean(active) || pending;
-  $('resume').hidden = done || Boolean(active);
+  $('resume').hidden = done || Boolean(active) || job.status === 'Queued';
   $('resume').disabled = pending || !online;
   text('resume', ((job.folder && job.kind !== 'folder') || job.onePass) && !job.canFinish ? 'Restart' : 'Resume');
   $('refresh').hidden = done || job.kind === 'folder' || Boolean(active) || Boolean(job.canFinish);
@@ -408,8 +440,18 @@ window.receive = event => {
       online = event.available; if (!$('destination').value) $('destination').value = event.downloads || '';
       if (!online) notice('Install aria2 with brew install aria2, then reopen the app.'); break;
     case 'folder': $('destination').value = event.path; break;
-    case 'error': pending = false; notice(event.message); break;
-    case 'disconnected': pending = false; online = false; active = null; notice(event.message); break;
+    case 'accepted':
+      if ($('link').value === submittedLink) {
+        for (const id of ['link','name','checksum']) $(id).value = '';
+        $('onePass').checked = settings.onePass === true;
+      }
+      submittedLink = null;
+      selected = event.id;
+      refreshLinkOptions();
+      $('link').focus();
+      break;
+    case 'error': submittedLink = null; pending = false; notice(event.message); break;
+    case 'disconnected': submittedLink = null; pending = false; online = false; active = null; notice(event.message); break;
     case 'history': {
       const old = active;
       jobs = event.jobs;
@@ -445,8 +487,9 @@ $('browse').onclick = () => send({ action: 'chooseFolder' });
 $('notifications').onchange = () => { if ($('notifications').checked) send({ action: 'notificationPermission' }); };
 $('setup').onsubmit = event => {
   event.preventDefault();
-  if (!online || active || pending) return;
-  notice(''); pending = true; render();
+  if ($('formStart').disabled) return;
+  submittedLink = $('link').value;
+  notice(''); render();
   send({ action: 'start', ...Object.fromEntries(['link', 'name', 'destination', 'connections', 'speedCap', 'checksum',
     'brutal', 'subfolder', 'notifications', 'onePass'].map(id => [id, $(id).type === 'checkbox' ? $(id).checked : $(id).value])), folderOutput:$('folderOutput').value });
 };

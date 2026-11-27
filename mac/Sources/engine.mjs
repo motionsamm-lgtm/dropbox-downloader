@@ -330,7 +330,6 @@ export class Downloader {
   }
 
   async start(input) {
-    if (this.active) throw new DownloadError('Pause or finish the current download first.');
     const drive = isGoogleDriveLink(input.link);
     let link, driveFile = null;
     if (drive) {
@@ -382,7 +381,7 @@ export class Downloader {
       : target;
     if (await fileInfo(target) || (folderRoot !== target && await fileInfo(folderRoot))) throw new DownloadError('A file or folder already exists at that destination. Choose a different name.');
     const activeTarget = [...this.jobs.values()].find(j => j.status !== 'Completed' && j.target === target);
-    if (activeTarget && !input.onePass) throw new DownloadError('This destination already has a History entry. Select it and use Resume.');
+    if (activeTarget && (!input.onePass || activeTarget.status === 'Queued' || activeTarget.id === this.active?.id)) throw new DownloadError('This destination already has a History entry. Select it and use Resume.');
     if (createdFilenameSubfolder) {
       await fs.mkdir(destination).catch(() => { throw new DownloadError('Could not create the filename subfolder. Check the save location.'); });
       destination = await fs.realpath(destination);
@@ -402,12 +401,19 @@ export class Downloader {
     await fs.mkdir(this.jobPath(job, ''), { mode: 0o700 });
     await this.save(job);
     this.jobs.set(id, job);
-    this.launch(job);
+    this.runNext();
+    return id;
   }
 
   createDriveClient() {
     if (!this.driveClient) this.driveClient = createDriveClient({apiKey:this.driveApiKey});
     return this.driveClient;
+  }
+
+  runNext() {
+    if (this.active || this.stopping) return;
+    const next = [...this.jobs.values()].sort((a,b) => a.created.localeCompare(b.created)).find(job => job.status === 'Queued');
+    if (next) this.launch(next);
   }
 
   launch(job, newLink = null, restart = false) {
@@ -419,7 +425,7 @@ export class Downloader {
     active.task = (job.kind === 'folder' ? this.runFolder(job, controller.signal) : this.run(job, newLink, restart, controller.signal)).catch(() => {
       job.status = 'Interrupted';
       job.message = 'Could not write download history. Saved transfer files were kept.';
-    }).finally(() => { this.active = null; this.send(); });
+    }).finally(() => { this.active = null; this.send(); this.runNext(); });
   }
 
   async partialFiles(job) {
@@ -439,7 +445,12 @@ export class Downloader {
       .map(name => path.join(job.destination, name));
   }
 
-  pause(id = this.active?.id) {
+  async pause(id = this.active?.id) {
+    const job = this.jobs.get(id);
+    if (job?.status === 'Queued' && this.active?.id !== id) {
+      await this.status(job, 'Paused', 'Paused before starting.');
+      return;
+    }
     if (this.active?.id !== id) throw new DownloadError('Select the active download to pause it.');
     this.active?.controller.abort(new DownloadError(pauseText));
   }
@@ -701,7 +712,7 @@ export class Downloader {
       let parallelLimit = job.brutal ? 3 : 1;
       const update = () => {
         if (children.some(child=>child.recovery)) parallelLimit = 1;
-        job.children = children.slice(0,500).map((child,index)=>({id:child.id,name:job.entries[index].remote,status:child.status,metrics:child.metrics}));
+        job.children = children.slice(0,500).map((child,index)=>({id:child.id,name:job.entries[index].remote,status:child.status,size:job.entries[index].size,message:child.message,metrics:child.metrics}));
         job.completedFiles=children.filter(child=>child.status==='Completed').length;
         job.fileCount=children.length;
         job.metrics={total:job.entries.reduce((sum,e)=>sum+e.size,0),done:children.reduce((sum,child,index)=>sum+(child.status==='Completed'?job.entries[index].size:Math.min(job.entries[index].size,child.metrics?.done||0)),0),
@@ -732,9 +743,10 @@ export class Downloader {
       if(rejected) throw rejected.reason;
       update();
       let status=signal.aborted?'Paused':children.every(child=>child.status==='Completed')?'Completed':'Failed';
+      const failed = children.find(child => child.status === 'Failed');
       let message=status==='Completed'?`Completed. ${children.length} files saved and verified.`:
         status==='Paused'?`Paused. ${job.completedFiles}/${children.length} files completed; Resume keeps them.`:
-        `${job.completedFiles}/${children.length} files completed. Resume retries unfinished files.`;
+        `${job.completedFiles}/${children.length} files completed. ${failed?.message || ''} Resume retries unfinished files.`;
       if (status === 'Completed' && job.folderOutput === 'zip') {
         await this.status(job, 'Verifying', 'Every file is verified. Assembling and checking the ZIP…');
         message = await this.createFolderZip(job, children, signal);
